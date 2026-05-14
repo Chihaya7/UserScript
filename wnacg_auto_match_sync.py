@@ -8,8 +8,8 @@ SOURCE_URL = "https://wn01.link/"
 
 # 需要更新的多个脚本文件
 SCRIPT_FILES = [
-    "pic_box href index → sild.user.js",
-    "another.user.js"
+    "wnacg Layout Redesign Mobile.js",
+    "wnacg Reading history GIST backup.js"
 ]
 
 def fetch_latest_urls():
