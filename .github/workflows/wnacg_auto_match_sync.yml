@@ -40,5 +40,5 @@ jobs:
           git config --local user.name "github-actions[bot]"
           git add "wnacg Layout Redesign Mobile.js"
           git add "wnacg Reading history GIST backup.js"
-          git commit -m "🔄 自动更新网址 - $(date +'%Y-%m-%d %H:%M:%S')"
+          git commit -m "🔄 自动更新match网址 - $(date +'%Y-%m-%d %H:%M:%S')"
           git push
