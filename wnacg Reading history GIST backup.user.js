@@ -2,8 +2,8 @@
 // @name         wnacg Reading history GIST backup
 // @name:zh-CN   绅士漫画已读记录-移动端
 // @namespace    绅士漫画
-// @version      2026-05-14 17:49:22
-// @description  仅支持移动端，自动记录已读漫画 + IndexedDB + 实时变灰 + 页面新增统计 + Gist 每日同步 + 阅读日期显示 + 搜索页支持
+// @version      2026-05-19 21:58:27
+// @description  仅支持移动端，自动记录已读漫画 + IndexedDB + 实时变灰 + 页面新增统计 + Gist 每日同步 + 阅读日期显示 + 搜索页支持 + 历史记录页
 // @icon         https://wnacg.com/favicon.ico
 // @match        https://*.wnacg.ru/*
 // @match        https://*.wnacg.com/*
@@ -42,187 +42,236 @@
     // =========================
 
     const DB_NAME = 'WN_READ_DB';
-    const STORE_NAME = 'read';
-    const META_STORE = 'meta';
-    const DB_VERSION = 2;
+    const STORE = 'read';
+    const META = 'meta';
+    const DB_VER = 1;
 
     let db = null;
-
-    // 内存 Map，key 为漫画 id，value 为 { title, date }
-    let readMap = new Map();
-
-    // 当前页面本次新增已读数量
-    let currentPageAdded = 0;
+    let readSet = new Set();     // 已读漫画 id 集合
+    let addedCount = 0;          // 本页新增已读数（原 currentPageAdded）
+    let totalCount = 0;          // 数据库总数，内存维护，避免重复 count 查询
+    let lastTs = 0;              // 上次写入时间戳，保证单调递增
+    let hostUpdated = false;     // 封面域名今日是否已更新，避免重复读 meta
 
     // =========================
     // 打开数据库
-    // 版本 2 起新增 meta store 用于存储同步日期等元数据
     // =========================
 
     function openDB() {
         return new Promise((resolve, reject) => {
-            const request = indexedDB.open(DB_NAME, DB_VERSION);
-            request.onupgradeneeded = function (event) {
-                db = event.target.result;
-                if (!db.objectStoreNames.contains(STORE_NAME)) {
-                    db.createObjectStore(STORE_NAME, { keyPath: 'id' });
-                }
-                if (!db.objectStoreNames.contains(META_STORE)) {
-                    db.createObjectStore(META_STORE, { keyPath: 'key' });
-                }
+            const req = indexedDB.open(DB_NAME, DB_VER);
+            req.onupgradeneeded = e => {
+                const d = e.target.result;
+                const store = d.createObjectStore(STORE, { keyPath: 'id' });
+                store.createIndex('idx_ts', 'ts', { unique: false });
+                d.createObjectStore(META, { keyPath: 'key' });
             };
-            request.onsuccess = function (event) {
-                db = event.target.result;
-                resolve(db);
-            };
-            request.onerror = reject;
+            req.onsuccess = e => { db = e.target.result; resolve(db); };
+            req.onerror = reject;
         });
     }
 
     // =========================
-    // 读取 meta store 中的值
+    // meta 表读写
     // =========================
 
-    function getMetaValue(key) {
+    function getMeta(key) {
         return new Promise((resolve, reject) => {
-            const store = db.transaction(META_STORE, 'readonly').objectStore(META_STORE);
-            const req = store.get(key);
+            const req = db.transaction(META, 'readonly').objectStore(META).get(key);
             req.onsuccess = () => resolve(req.result?.value ?? null);
             req.onerror = () => reject(req.error);
         });
     }
 
-    // =========================
-    // 写入 meta store 中的值
-    // =========================
-
-    function setMetaValue(key, value) {
+    function setMeta(key, value) {
         return new Promise((resolve, reject) => {
-            const store = db.transaction(META_STORE, 'readwrite').objectStore(META_STORE);
-            const req = store.put({ key, value });
+            const req = db.transaction(META, 'readwrite').objectStore(META).put({ key, value });
             req.onsuccess = resolve;
             req.onerror = reject;
         });
     }
 
     // =========================
-    // 获取全部漫画记录
-    // 返回 [{id, title, date}, ...]
+    // 获取全部记录（Gist 同步用）
     // =========================
 
     function getAllRecords() {
         return new Promise((resolve, reject) => {
-            const store = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME);
-            const req = store.getAll();
+            const req = db.transaction(STORE, 'readonly').objectStore(STORE).getAll();
+            req.onsuccess = () => resolve(req.result || []);
+            req.onerror = () => reject(req.error);
+        });
+    }
+
+    // =========================
+    // 批量查询指定 id 列表（Promise.all 并发，同一事务）
+    // 返回数组顺序与传入 ids 一致，未找到为 null
+    // =========================
+
+    function queryByIds(ids) {
+        if (ids.length === 0) return Promise.resolve([]);
+        const store = db.transaction(STORE, 'readonly').objectStore(STORE);
+        return Promise.all(
+            ids.map(id => new Promise(resolve => {
+                const req = store.get(id);
+                req.onsuccess = () => resolve(req.result || null);
+                req.onerror = () => resolve(null);
+            }))
+        );
+    }
+
+    // =========================
+    // 新增或更新一条记录（put 语义，ts 单调递增）
+    // =========================
+
+    function saveComic(id, title, coverPath) {
+        const ts = Math.max(Date.now(), lastTs + 1);
+        lastTs = ts;
+        return new Promise((resolve, reject) => {
+            const req = db.transaction(STORE, 'readwrite').objectStore(STORE)
+                .put({ id, title, ts, coverPath: coverPath || '' });
+            req.onsuccess = () => resolve(ts);
+            req.onerror = () => reject(req.error);
+        });
+    }
+
+    // =========================
+    // 获取数据库总数
+    // =========================
+
+    function getCount() {
+        return new Promise((resolve, reject) => {
+            const req = db.transaction(STORE, 'readonly').objectStore(STORE).count();
             req.onsuccess = () => resolve(req.result);
             req.onerror = () => reject(req.error);
         });
     }
 
     // =========================
-    // 获取数据库漫画总数量
+    // 批量写入（云端恢复用，add 语义，id 冲突跳过）
     // =========================
 
-    function getTotalCount() {
+    function saveBatch(records) {
         return new Promise((resolve, reject) => {
-            const store = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME);
-            const req = store.count();
-            req.onsuccess = () => resolve(req.result);
-            req.onerror = () => reject(req.error);
-        });
-    }
-
-    // =========================
-    // 写入单条漫画记录（含阅读日期）
-    // put 语义：已存在则覆盖，不存在则插入
-    // =========================
-
-    function saveComic(id, title, date) {
-        return new Promise((resolve, reject) => {
-            const store = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME);
-            const req = store.put({ id, title, date });
-            req.onsuccess = resolve;
-            req.onerror = reject;
-        });
-    }
-
-    // =========================
-    // 批量写入漫画记录（云端恢复用）
-    // 使用 add 而非 put，已存在的 id 会被跳过，保留本地原有数据
-    // =========================
-
-    function saveComicsBatch(records) {
-        return new Promise((resolve, reject) => {
-            const tx = db.transaction(STORE_NAME, 'readwrite');
-            const store = tx.objectStore(STORE_NAME);
-            records.forEach(r => store.add({
-                id: r.id,
-                title: r.title || '',
-                date: r.date || '',
-            }));
+            const tx = db.transaction(STORE, 'readwrite');
+            const store = tx.objectStore(STORE);
+            records.forEach(r => {
+                const req = store.add({
+                    id: r.id, title: r.title || '',
+                    ts: r.ts || 0, coverPath: r.coverPath || '',
+                });
+                req.onerror = () => { };
+            });
             tx.oncomplete = resolve;
             tx.onerror = reject;
         });
     }
 
     // =========================
-    // 从 URL 中提取漫画 id
-    // 匹配 aid-{数字} 格式
+    // 清空本地记录
+    // =========================
+
+    function clearAll() {
+        return new Promise((resolve, reject) => {
+            const req = db.transaction(STORE, 'readwrite').objectStore(STORE).clear();
+            req.onsuccess = resolve;
+            req.onerror = () => reject(req.error);
+        });
+    }
+
+    // =========================
+    // 时间戳 → "YYYY-MM-DD"
+    // =========================
+
+    function tsToDate(ts) {
+        if (!ts) return '';
+        const d = new Date(ts);
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+
+    function today() { return tsToDate(Date.now()); }
+
+    // =========================
+    // 从 URL 提取漫画 id
     // =========================
 
     function extractId(url) {
-        if (!url) return null;
-        const match = url.match(/aid-(\d+)/);
-        return match ? Number(match[1]) : null;
+        const m = url?.match(/aid-(\d+)/);
+        return m ? Number(m[1]) : null;
     }
 
     // =========================
-    // 获取今天的日期字符串（本地时间）
-    // 格式：YYYY-MM-DD
+    // 从封面 URL 提取数字路径段（不含域名）
+    // 取末尾三段数字 + 后缀，不依赖固定路径前缀
     // =========================
 
-    function getTodayStr() {
-        const d = new Date();
-        const y = d.getFullYear();
-        const m = String(d.getMonth() + 1).padStart(2, '0');
-        const day = String(d.getDate()).padStart(2, '0');
-        return `${y}-${m}-${day}`;
+    function extractCoverPath(url) {
+        if (!url) return '';
+        try {
+            const u = new URL(url);
+            const nums = u.pathname.match(/\d+/g);
+            if (!nums || nums.length < 3) return u.pathname;
+            return `data/t/${nums.slice(-3).join('/')}.${u.pathname.split('.').pop()}`;
+        } catch { return ''; }
     }
 
     // =========================
-    // 注入已读相关样式
+    // 从封面 URL 提取域名前缀
     // =========================
 
-    function addReadStyle() {
-        const style = document.createElement('style');
-        style.innerHTML = /*css*/`
-            /* 已读条目整体变灰 */
+    function extractHost(url) {
+        try { return new URL(url).origin; } catch { return ''; }
+    }
+
+    // =========================
+    // 每日更新封面域名前缀（内存标记避免重复读 meta）
+    // =========================
+
+    async function refreshHostIfNeeded(coverUrl) {
+        if (hostUpdated) return;
+        const lastDate = await getMeta('coverHostDate');
+        if (lastDate === today()) { hostUpdated = true; return; }
+        const host = extractHost(coverUrl);
+        if (!host) return;
+        await setMeta('coverHost', host);
+        await setMeta('coverHostDate', today());
+        hostUpdated = true;
+    }
+
+    async function getCoverHost() {
+        return (await getMeta('coverHost')) || '';
+    }
+
+    // =========================
+    // 注入样式
+    // =========================
+
+    function addStyle() {
+        const s = document.createElement('style');
+        s.innerHTML = /*css*/`
             .wn-read {
                 opacity: 0.7 !important;
                 filter: grayscale(30%) !important;
                 transition: 0.2s;
             }
             .wn-read a { color: #888 !important; }
-            .wn-read a:visited { color:#0000FF !important; }
+            .wn-read a:visited { color: #0000FF !important; }
             .wn-read-link { color: #777 !important; }
             .wn-read-link:visited { color: #555 !important; }
 
-            /* 阅读日期标签 */
-            .wn-read-date {
+            .wn-date {
                 display: block !important;
                 float: none !important;
                 width: auto !important;
                 height: auto !important;
                 margin: 4px 0 0 0 !important;
                 background: none !important;
-                background-size: unset !important;
                 font-size: 15px;
                 color: #aaa;
                 font-weight: normal;
             }
 
-            /* 顶部统计栏 */
-            #wn-read-stats {
+            #wn-stats {
                 display: flex;
                 align-items: center;
                 gap: 8px;
@@ -234,114 +283,399 @@
                 z-index: 9999;
                 user-select: none;
             }
-            #wn-read-stats span { display: inline-block; line-height: 1; }
+            #wn-stats span { display: inline-block; line-height: 1; }
+
+            #wn-hist-panel {
+                display: none;
+                padding: 0;
+                background: #fff;
+                border-top: 1px solid #eee;
+            }
+            .wn-hist-item {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                padding: 8px 10px;
+                border-bottom: 1px solid #f0f0f0;
+                cursor: pointer;
+                text-decoration: none;
+                color: inherit;
+            }
+            .wn-hist-item:active { background: #f5f5f5; }
+            .wn-hist-cover {
+                width: 56px;
+                height: 80px;
+                object-fit: cover;
+                border-radius: 4px;
+                background: #eee;
+                flex-shrink: 0;
+            }
+            .wn-hist-no-cover {
+                width: 56px;
+                height: 80px;
+                border-radius: 4px;
+                background: #e0e0e0;
+                flex-shrink: 0;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 11px;
+                color: #aaa;
+            }
+            .wn-hist-info { flex: 1; overflow: hidden; }
+            .wn-hist-title {
+                font-size: 14px;
+                color: #333;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .wn-hist-date { font-size: 12px; color: #aaa; margin-top: 4px; }
+
+            #wn-hist-pager {
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                gap: 6px;
+                padding: 10px 0 14px;
+                flex-wrap: wrap;
+            }
+            .wn-page-btn {
+                min-width: 32px;
+                height: 32px;
+                line-height: 32px;
+                text-align: center;
+                padding: 0 6px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                background: #fff;
+                font-size: 13px;
+                color: #555;
+                cursor: pointer;
+            }
+            .wn-page-btn.active {
+                background: #e74c3c;
+                color: #fff;
+                border-color: #e74c3c;
+                font-weight: bold;
+            }
         `;
-        document.head.appendChild(style);
+        document.head.appendChild(s);
     }
 
     // =========================
-    // 将指定元素标记为已读
-    // 添加 wn-read class，并对内部所有 a 标签添加 wn-read-link
+    // 标记元素为已读
     // =========================
 
-    function markAsRead(element) {
-        if (!element) return;
-        element.classList.add('wn-read');
-        element.querySelectorAll('a').forEach(a => a.classList.add('wn-read-link'));
+    function markRead(el) {
+        if (!el) return;
+        el.classList.add('wn-read');
+        el.querySelectorAll('a').forEach(a => a.classList.add('wn-read-link'));
     }
 
     // =========================
-    // 在指定元素附近插入阅读日期 span
-    // inside=true  → appendChild 插入目标元素内部末尾（albums/搜索页标题内）
-    // inside=false → insertAdjacentElement('afterend') 插入目标元素后面（ranking页）
-    // 两种模式各自做重复插入检查
+    // 在指定元素附近插入阅读日期
+    // inside=true  → 插入到目标元素内部末尾
+    // inside=false → 插入到目标元素后面（兄弟节点）
     // =========================
 
-    function showReadDate(parent, selector, date, inside = true) {
-        //showReadDate(li, '.ImgA', readMap.get(id).date, false);
-        if (!date) return;
-        const target = parent.querySelector(selector);
+    function showDate(parent, sel, ts, inside = true) {
+        if (!ts) return;
+        const target = parent.querySelector(sel);
         if (!target) return;
-        if (inside ? target.querySelector('.wn-read-date')
-            : target.nextElementSibling?.classList.contains('wn-read-date')) return;
+        if (inside ? target.querySelector('.wn-date')
+            : target.nextElementSibling?.classList.contains('wn-date')) return;
         const span = document.createElement('span');
-        span.className = 'wn-read-date';
-        span.textContent = date;
+        span.className = 'wn-date';
+        span.textContent = tsToDate(ts);
         inside ? target.appendChild(span) : target.insertAdjacentElement('afterend', span);
     }
 
     // =========================
-    // 更新顶部统计栏显示
-    // 格式：总已读数 | 本页新增数
+    // 更新顶部统计栏（使用内存中的 totalCount，不查数据库）
     // =========================
 
-    async function updateHeaderStats() {
-        const total = await getTotalCount();
-        const stats = document.getElementById('wn-read-stats');
-        if (!stats) return;
-        stats.innerHTML = `
-            <span>${total}</span>
-            <span>|</span>
-            <span>${currentPageAdded}</span>
-        `;
+    function updateStats() {
+        const el = document.getElementById('wn-stats');
+        if (!el) return;
+        el.innerHTML = `<span>${totalCount}</span><span>|</span><span>${addedCount}</span>`;
     }
 
-    // =========================
-    // 在页面 header 中插入统计栏
-    // =========================
-
-    async function createHeaderStats() {
+    async function createStats() {
         const header = document.querySelector('.header');
         if (!header) return;
-        const stats = document.createElement('div');
-        stats.id = 'wn-read-stats';
-        header.appendChild(stats);
-        await updateHeaderStats();
+        const el = document.createElement('div');
+        el.id = 'wn-stats';
+        header.appendChild(el);
+        updateStats();
     }
 
     // =========================
-    // 从 Gist 拉取云端数据
-    // 返回 [{id, title, date}, ...]
-    // 兼容三种历史格式：
-    //   纯数组 [id, ...]
-    //   旧对象 { id: title }
-    //   新对象 { id: { title, date } }
+    // 通用点击处理：保存记录、标记已读、更新统计
+    // 抽出三个页面处理函数中重复的点击逻辑
+    // @param {number}   id         - 漫画 id
+    // @param {string}   title      - 漫画标题
+    // @param {Function} getCoverUrl - 返回封面完整 URL 的函数
+    // @param {Function} onSaved    - 保存成功后的回调 (ts) => void，负责调用 markRead/showDate
+    // =========================
+
+    async function handleClick(id, title, getCoverUrl, onSaved) {
+        const coverUrl = getCoverUrl();
+        if (coverUrl) await refreshHostIfNeeded(coverUrl);
+        const coverPath = extractCoverPath(coverUrl);
+        const ts = await saveComic(id, title, coverPath);
+        const isNew = !readSet.has(id);
+        readSet.add(id);
+        if (isNew) { addedCount++; totalCount++; }
+        onSaved(ts);
+        updateStats();
+    }
+
+    // =========================
+    // 数据管理 UI
+    // =========================
+
+    function createMgmtUI() {
+        const classBox = document.querySelector('.TabBar .classBox');
+        if (!classBox) return;
+        const classTit = classBox.querySelector('#classTit');
+        const classCon = classBox.querySelector('#classCon');
+        if (!classTit || !classCon) return;
+
+        const li = document.createElement('li');
+        li.innerHTML = '<a href="javascript:void(0)" id="wn-mgmt-tab">数据管理</a>';
+        classTit.appendChild(li);
+
+        const panel = document.createElement('div');
+        panel.id = 'wn-mgmt-panel';
+        panel.style.cssText = 'display:none;padding:12px 10px;background:#fff;border-top:1px solid #eee;';
+        panel.innerHTML = `
+            <div style="display:flex;gap:12px;flex-wrap:wrap;">
+                <button id="wn-btn-del" style="flex:1;min-width:120px;padding:10px 0;background:#e74c3c;color:#fff;border:none;border-radius:6px;font-size:15px;cursor:pointer;">🗑 全部删除</button>
+                <button id="wn-btn-push" style="flex:1;min-width:120px;padding:10px 0;background:#27ae60;color:#fff;border:none;border-radius:6px;font-size:15px;cursor:pointer;">☁ 全部上传</button>
+            </div>
+            <div id="wn-mgmt-msg" style="margin-top:10px;font-size:13px;color:#888;min-height:20px;line-height:1.6;"></div>
+        `;
+        classCon.appendChild(panel);
+
+        li.querySelector('#wn-mgmt-tab').addEventListener('click', () => {
+            const v = panel.style.display !== 'none';
+            panel.style.display = v ? 'none' : 'block';
+            const hp = document.getElementById('wn-hist-panel');
+            if (hp) hp.style.display = 'none';
+        });
+
+        document.getElementById('wn-btn-del').addEventListener('click', async () => {
+            const msg = document.getElementById('wn-mgmt-msg');
+            if (!confirm('确认删除本地所有已读记录？此操作不可恢复。')) return;
+            try {
+                msg.textContent = '删除中...';
+                await clearAll();
+                readSet.clear();
+                addedCount = 0;
+                totalCount = 0;
+                updateStats();
+                msg.textContent = '✅ 本地记录已全部删除。';
+            } catch (e) {
+                msg.textContent = '❌ 删除失败：' + e.message;
+            }
+        });
+
+        document.getElementById('wn-btn-push').addEventListener('click', async () => {
+            const msg = document.getElementById('wn-mgmt-msg');
+            try {
+                msg.textContent = '上传中...';
+                const records = await getAllRecords();
+                if (records.length === 0) { msg.textContent = '⚠️ 本地没有记录可上传。'; return; }
+                await pushGist(records);
+                msg.textContent = `✅ 已上传 ${records.length} 条记录到 Gist。`;
+            } catch (e) {
+                msg.textContent = '❌ 上传失败：' + e.message;
+            }
+        });
+    }
+
+    // =========================
+    // 历史记录 UI
+    // =========================
+
+    function createHistUI() {
+        const classBox = document.querySelector('.TabBar .classBox');
+        if (!classBox) return;
+        const classTit = classBox.querySelector('#classTit');
+        const classCon = classBox.querySelector('#classCon');
+        if (!classTit || !classCon) return;
+
+        const li = document.createElement('li');
+        li.innerHTML = '<a href="javascript:void(0)" id="wn-hist-tab">历史记录</a>';
+        classTit.appendChild(li);
+
+        const panel = document.createElement('div');
+        panel.id = 'wn-hist-panel';
+        panel.innerHTML = '<div id="wn-hist-list"></div><div id="wn-hist-pager"></div>';
+        classCon.appendChild(panel);
+
+        li.querySelector('#wn-hist-tab').addEventListener('click', () => {
+            const v = panel.style.display !== 'none';
+            if (v) { panel.style.display = 'none'; return; }
+            panel.style.display = 'block';
+            const mp = document.getElementById('wn-mgmt-panel');
+            if (mp) mp.style.display = 'none';
+            renderHistPage(1);
+        });
+    }
+
+    // =========================
+    // 用 idx_ts 游标倒序读取指定分页
+    // =========================
+
+    function readPageByTs(offset, size) {
+        return new Promise((resolve, reject) => {
+            const idx = db.transaction(STORE, 'readonly').objectStore(STORE).index('idx_ts');
+            const req = idx.openCursor(null, 'prev');
+            const results = [];
+            let skipped = false;
+            req.onsuccess = e => {
+                const cur = e.target.result;
+                if (!cur) { resolve(results); return; }
+                if (!skipped) {
+                    skipped = true;
+                    if (offset > 0) { cur.advance(offset); return; }
+                }
+                results.push(cur.value);
+                if (results.length >= size) { resolve(results); return; }
+                cur.continue();
+            };
+            req.onerror = () => reject(req.error);
+        });
+    }
+
+    async function renderHistPage(page) {
+        const PAGE = 10;
+        const listEl = document.getElementById('wn-hist-list');
+        const pagerEl = document.getElementById('wn-hist-pager');
+        if (!listEl || !pagerEl) return;
+
+        listEl.innerHTML = '<div style="padding:12px;color:#aaa;font-size:13px;">加载中...</div>';
+        pagerEl.innerHTML = '';
+
+        if (totalCount === 0) {
+            listEl.innerHTML = '<div style="padding:12px;color:#aaa;font-size:13px;">暂无记录</div>';
+            return;
+        }
+
+        const totalPages = Math.ceil(totalCount / PAGE);
+        const cur = Math.max(1, Math.min(page, totalPages));
+        const slice = await readPageByTs((cur - 1) * PAGE, PAGE);
+        const host = await getCoverHost();
+
+        listEl.innerHTML = '';
+        slice.forEach(r => {
+            const coverUrl = (host && r.coverPath) ? `${host}/${r.coverPath}` : '';
+            const comicUrl = `https://${location.hostname}/photos-index-aid-${r.id}.html`;
+
+            const item = document.createElement('a');
+            item.className = 'wn-hist-item';
+            item.href = comicUrl;
+
+            if (coverUrl) {
+                const img = document.createElement('img');
+                img.className = 'wn-hist-cover';
+                img.src = coverUrl;
+                img.alt = r.title;
+                img.onerror = () => img.replaceWith(noCover());
+                item.appendChild(img);
+            } else {
+                item.appendChild(noCover());
+            }
+
+            const info = document.createElement('div');
+            info.className = 'wn-hist-info';
+            info.innerHTML = `
+                <div class="wn-hist-title">${r.title || '未知标题'}</div>
+                <div class="wn-hist-date">${tsToDate(r.ts)}</div>
+            `;
+            item.appendChild(info);
+
+            item.addEventListener('click', async e => {
+                e.preventDefault();
+                try { await saveComic(r.id, r.title, r.coverPath); } catch { }
+                location.href = comicUrl;
+            });
+
+            listEl.appendChild(item);
+        });
+
+        renderPager(pagerEl, cur, totalPages);
+    }
+
+    function noCover() {
+        const d = document.createElement('div');
+        d.className = 'wn-hist-no-cover';
+        d.textContent = '无封面';
+        return d;
+    }
+
+    // =========================
+    // 分页器
+    // =========================
+
+    function renderPager(el, cur, total) {
+        if (total <= 1) return;
+        const btn = (label, page, active = false) => {
+            const b = document.createElement('span');
+            b.className = 'wn-page-btn' + (active ? ' active' : '');
+            b.textContent = label;
+            if (page !== null) b.addEventListener('click', () => renderHistPage(page));
+            return b;
+        };
+        if (cur > 1) el.appendChild(btn('‹', cur - 1));
+        buildPageRange(cur, total).forEach(p => {
+            if (p === '...') {
+                const d = document.createElement('span');
+                d.className = 'wn-page-btn';
+                d.textContent = '…';
+                d.style.cursor = 'default';
+                el.appendChild(d);
+            } else {
+                el.appendChild(btn(p, p, p === cur));
+            }
+        });
+        if (cur < total) el.appendChild(btn('›', cur + 1));
+    }
+
+    function buildPageRange(cur, total) {
+        if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+        const set = new Set([1, total]);
+        for (let i = cur - 1; i <= cur + 1; i++) if (i >= 1 && i <= total) set.add(i);
+        const sorted = [...set].sort((a, b) => a - b);
+        const result = [];
+        let prev = 0;
+        sorted.forEach(p => { if (p - prev > 1) result.push('...'); result.push(p); prev = p; });
+        return result;
+    }
+
+    // =========================
+    // Gist 操作
     // =========================
 
     function fetchGist() {
         return fetch(`https://api.github.com/gists/${GIST_ID}`, {
-            headers: {
-                'Authorization': `token ${GITHUB_TOKEN}`,
-                'Accept': 'application/vnd.github.v3+json',
-            },
+            headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3+json' },
         })
             .then(r => r.json())
-            .then(gist => {
-                const content = gist.files?.[GIST_FILE]?.content;
+            .then(g => {
+                const content = g.files?.[GIST_FILE]?.content;
                 if (!content) return [];
-                const data = JSON.parse(content);
-                if (Array.isArray(data)) {
-                    return data.map(id => ({ id: Number(id), title: '', date: '' }));
-                }
-                return Object.entries(data).map(([id, val]) => {
-                    if (typeof val === 'string') {
-                        return { id: Number(id), title: val, date: '' };
-                    }
-                    return { id: Number(id), title: val.title || '', date: val.date || '' };
-                });
+                return Object.entries(JSON.parse(content)).map(([id, v]) => ({
+                    id: Number(id), title: v.title || '', ts: v.ts || 0, coverPath: v.coverPath || '',
+                }));
             });
     }
 
-    // =========================
-    // 将漫画记录上传到 Gist
-    // 存储格式：{ id: { title, date } }
-    // =========================
-
     function pushGist(records) {
         const data = {};
-        records.forEach(r => {
-            data[r.id] = { title: r.title || '', date: r.date || '' };
-        });
+        records.forEach(r => { data[r.id] = { title: r.title || '', ts: r.ts || 0, coverPath: r.coverPath || '' }; });
         return fetch(`https://api.github.com/gists/${GIST_ID}`, {
             method: 'PATCH',
             headers: {
@@ -349,220 +683,168 @@
                 'Accept': 'application/vnd.github.v3+json',
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({
-                files: {
-                    [GIST_FILE]: { content: JSON.stringify(data, null, 2) },
-                },
-            }),
+            body: JSON.stringify({ files: { [GIST_FILE]: { content: JSON.stringify(data, null, 2) } } }),
         });
     }
 
     // =========================
-    // 检查今天是否已经同步过
+    // 每日 Gist 同步
     // =========================
 
-    async function hasSyncedToday() {
-        const val = await getMetaValue('lastSyncDate');
-        return val === getTodayStr();
-    }
-
-    // =========================
-    // 将今天标记为已同步
-    // =========================
-
-    function markSyncedToday() {
-        return setMetaValue('lastSyncDate', getTodayStr());
-    }
-
-    // =========================
-    // 核心：每日同步逻辑
-    // 每天第一次打开时执行，比较本地与云端差异：
-    //   云端独有 → 写入本地并更新内存
-    //   本地独有 → 上传并集到云端
-    //   完全一致 → 不做操作
-    // 同步失败不影响脚本正常运行
-    // =========================
-
-    async function syncWithGist() {
-        if (await hasSyncedToday()) return;
-
-        console.log('[wn-read] 开始每日同步...');
-
+    async function syncGist() {
+        if (await getMeta('lastSync') === today()) return;
+        console.log('[wn] 开始每日同步...');
         try {
-            const cloudRecords = await fetchGist();
-            const cloudSet = new Set(cloudRecords.map(r => r.id));
+            const cloud = await fetchGist();
+            const cloudIds = new Set(cloud.map(r => r.id));
+            const local = await getAllRecords();
+            const localIds = new Set(local.map(r => r.id));
 
-            const localRecords = await getAllRecords();
-            const localSet = new Set(localRecords.map(r => r.id));
+            const fromCloud = cloud.filter(r => !localIds.has(r.id));
+            const toCloud = local.filter(r => !cloudIds.has(r.id));
 
-            const onlyInCloud = cloudRecords.filter(r => !localSet.has(r.id));
-            const onlyInLocal = localRecords.filter(r => !cloudSet.has(r.id));
-
-            console.log(`[wn-read] 本地 ${localSet.size} 条，云端 ${cloudSet.size} 条，`
-                + `云端独有 ${onlyInCloud.length} 条，本地独有 ${onlyInLocal.length} 条`);
-
-            if (onlyInCloud.length > 0) {
-                await saveComicsBatch(onlyInCloud);
-                onlyInCloud.forEach(r => readMap.set(r.id, { title: r.title, date: r.date }));
-                console.log(`[wn-read] 从云端恢复 ${onlyInCloud.length} 条`);
+            if (fromCloud.length > 0) {
+                await saveBatch(fromCloud);
+                fromCloud.forEach(r => readSet.add(r.id));
+                totalCount += fromCloud.length;
+            }
+            if (toCloud.length > 0) {
+                await pushGist([...local, ...fromCloud]);
             }
 
-            if (onlyInLocal.length > 0) {
-                const merged = [...localRecords, ...onlyInCloud];
-                await pushGist(merged);
-                console.log(`[wn-read] 上传备份，共 ${merged.length} 条`);
-            }
-
-            if (onlyInCloud.length === 0 && onlyInLocal.length === 0) {
-                console.log('[wn-read] 数据一致，无需操作');
-            }
-
-            await markSyncedToday();
-            console.log('[wn-read] 同步完成');
-
+            await setMeta('lastSync', today());
+            console.log(`[wn] 同步完成，本地${localIds.size}，云端${cloudIds.size}`);
         } catch (e) {
-            console.warn('[wn-read] 同步失败', e);
+            console.warn('[wn] 同步失败', e);
         }
     }
 
     // =========================
-    // 处理 albums 漫画列表页
-    // 选取 li，标题在 .txtA
+    // 处理 albums 列表页
     // =========================
 
-    function processAlbumsPage() {
+    function processAlbums() {
+        const items = [];
         document.querySelectorAll('li').forEach(li => {
             const imgA = li.querySelector('.ImgA');
             if (!imgA) return;
             const id = extractId(imgA.href);
-            const title = li.querySelector('.txtA')?.textContent.trim() || '';
             if (!id) return;
+            items.push({ li, imgA, id, title: li.querySelector('.txtA')?.textContent.trim() || '' });
+        });
 
-            if (readMap.has(id)) {
-                markAsRead(li);
-                showReadDate(li, '.txtA', readMap.get(id).date);
-            }
+        queryByIds(items.map(it => it.id)).then(results => {
+            results.forEach((rec, i) => {
+                if (!rec) return;
+                const { li, id } = items[i];
+                readSet.add(id);
+                markRead(li);
+                showDate(li, '.txtA', rec.ts);
+            });
+        });
 
+        items.forEach(({ li, imgA, id, title }) => {
             li.querySelectorAll('.ImgA, .txtA').forEach(a => {
-                a.addEventListener('click', async () => {
-                    if (readMap.has(id)) return;
-                    const date = getTodayStr();
-                    try {
-                        await saveComic(id, title, date);
-                        readMap.set(id, { title, date });
-                        currentPageAdded++;
-                        markAsRead(li);
-                        showReadDate(li, '.txtA', date);
-                        await updateHeaderStats();
-                    } catch (e) {
-                        console.warn('[wn-read] 保存失败', e);
-                    }
-                });
+                a.addEventListener('click', () => handleClick(
+                    id, title,
+                    () => imgA.querySelector('img')?.src || '',
+                    ts => { markRead(li); showDate(li, '.txtA', ts); }
+                ));
             });
         });
     }
 
     // =========================
     // 处理搜索结果页
-    // 结构与 albums 不同，没有 .txtA，标题在 .ImgA 内部的 span
-    // 日期插在 .ImgA span里
     // =========================
 
-    function processSearchPage() {
+    function processSearch() {
+        const items = [];
         document.querySelectorAll('#classify_container li').forEach(li => {
             const imgA = li.querySelector('.ImgA');
             if (!imgA) return;
             const id = extractId(imgA.href);
-            const title = imgA.querySelector('span')?.textContent.trim() || '';
             if (!id) return;
+            items.push({ li, imgA, id, title: imgA.querySelector('span')?.textContent.trim() || '' });
+        });
 
-            if (readMap.has(id)) {
-                markAsRead(li);
-                showReadDate(li, '.ImgA span', readMap.get(id).date, true);
-            }
-
-            imgA.addEventListener('click', async () => {
-                if (readMap.has(id)) return;
-                const date = getTodayStr();
-                try {
-                    await saveComic(id, title, date);
-                    readMap.set(id, { title, date });
-                    currentPageAdded++;
-                    markAsRead(li);
-                    showReadDate(li, '.ImgA span', date, true);
-                    await updateHeaderStats();
-                } catch (e) {
-                    console.warn('[wn-read] 保存失败', e);
-                }
+        queryByIds(items.map(it => it.id)).then(results => {
+            results.forEach((rec, i) => {
+                if (!rec) return;
+                const { li, id } = items[i];
+                readSet.add(id);
+                markRead(li);
+                showDate(li, '.ImgA span', rec.ts, true);
             });
+        });
+
+        items.forEach(({ li, imgA, id, title }) => {
+            imgA.addEventListener('click', () => handleClick(
+                id, title,
+                () => imgA.querySelector('img')?.src || '',
+                ts => { markRead(li); showDate(li, '.ImgA span', ts, true); }
+            ));
         });
     }
 
     // =========================
-    // 处理 ranking 排行页
-    // 选取 #topImgCon .itemBox，标题在 .itemTxt .title
-    // 日期插在 .title 后面（外部兄弟节点模式）
+    // 处理排行页
     // =========================
 
-    function processRankingPage() {
+    function processRanking() {
+        const items = [];
         document.querySelectorAll('#topImgCon .itemBox').forEach(box => {
             const titleA = box.querySelector('.itemTxt .title');
             if (!titleA) return;
             const id = extractId(titleA.href);
-            const title = titleA.textContent.trim();
             if (!id) return;
+            items.push({ box, id, title: titleA.textContent.trim() });
+        });
 
-            if (readMap.has(id)) {
-                markAsRead(box);
-                showReadDate(box, '.title', readMap.get(id).date, false);
-            }
+        queryByIds(items.map(it => it.id)).then(results => {
+            results.forEach((rec, i) => {
+                if (!rec) return;
+                const { box, id } = items[i];
+                readSet.add(id);
+                markRead(box);
+                showDate(box, '.title', rec.ts, false);
+            });
+        });
 
+        items.forEach(({ box, id, title }) => {
             box.querySelectorAll('.itemImg a, .itemTxt .title').forEach(a => {
-                a.addEventListener('click', async () => {
-                    if (readMap.has(id)) return;
-                    const date = getTodayStr();
-                    try {
-                        await saveComic(id, title, date);
-                        readMap.set(id, { title, date });
-                        currentPageAdded++;
-                        markAsRead(box);
-                        showReadDate(box, '.title', date, false);
-                        await updateHeaderStats();
-                    } catch (e) {
-                        console.warn('[wn-read] 保存失败', e);
-                    }
-                });
+                a.addEventListener('click', () => handleClick(
+                    id, title,
+                    () => box.querySelector('.itemImg img')?.src || '',
+                    ts => { markRead(box); showDate(box, '.title', ts, false); }
+                ));
             });
         });
     }
 
     // =========================
-    // 初始化入口
-    // 顺序：注入样式 → 开启DB → 每日同步 → 构建内存Map → 插入统计栏 → 分发页面处理
-    // 同步放在构建 readMap 之前，确保云端恢复的数据当页也能生效
+    // 初始化
     // =========================
 
     async function init() {
-        addReadStyle();
+        addStyle();
         await openDB();
+        await syncGist();
 
-        await syncWithGist();
+        totalCount = await getCount(); // 初始化时读一次，之后内存维护
 
-        const records = await getAllRecords();
-        readMap = new Map(records.map(r => [r.id, { title: r.title, date: r.date }]));
-
-        await createHeaderStats();
+        await createStats();
+        createMgmtUI();
+        createHistUI();
 
         if (document.querySelector('#classify_container')) {
-            if (location.href.includes('/search/') || location.href.includes('/q/')) {
-                processSearchPage();
-            } else {
-                processAlbumsPage();
-            }
+            (location.href.includes('/search/') || location.href.includes('/q/'))
+                ? processSearch()
+                : processAlbums();
         }
 
         if (location.href.includes('ranking') || document.querySelector('#topImgCon .itemBox')) {
-            processRankingPage();
+            processRanking();
         }
     }
 
