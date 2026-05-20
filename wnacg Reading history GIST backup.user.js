@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         wnacg Reading history GIST backup
-// @name:zh-CN   绅士漫画已读记录-移动端
+// @name         wnacg Reading history GIST backup2
+// @name:zh-CN   绅士漫画已读记录-移动端2
 // @namespace    绅士漫画
-// @version      2026-05-20 03:59:52
+// @version      2026-05-19
 // @description  仅支持移动端，自动记录已读漫画 + IndexedDB + 实时变灰 + 页面新增统计 + Gist 每日同步 + 阅读日期显示 + 搜索页支持 + 历史记录页
 // @icon         https://wnacg.com/favicon.ico
 // @match        https://*.wnacg.ru/*
@@ -20,9 +20,6 @@
 // @match        https://www.wn03.shop/*
 // @match        https://www.wn04.cfd/*
 // @match        https://www.wn04.shop/*
-// @match        https://www.wn05.cfd/*
-// @match        https://www.wn05.shop/*
-// @match        https://www.wn08.ru/*
 // @downloadURL  https://raw.githubusercontent.com/Chihaya7/Database/refs/heads/master/wnacg Reading history GIST backup.user.js
 // @updateURL    https://raw.githubusercontent.com/Chihaya7/Database/refs/heads/master/wnacg Reading history GIST backup.user.js
 // @run-at       document-start
@@ -42,6 +39,9 @@
 
     // =========================
     // 数据库配置
+    // read 表：keyPath 为 'id'（漫画 id），字段 ts（毫秒时间戳）、title、coverPath
+    //           idx_ts 索引用于历史页游标分页（unique:false，允许极端情况下 ts 相同）
+    // meta 表：存储 coverHost（封面域名前缀）等元数据
     // =========================
 
     const DB_NAME = 'WN_READ_DB';
@@ -50,14 +50,15 @@
     const DB_VER = 1;
 
     let db = null;
-    let readSet = new Set();     // 已读漫画 id 集合
-    let addedCount = 0;          // 本页新增已读数（原 currentPageAdded）
-    let totalCount = 0;          // 数据库总数，内存维护，避免重复 count 查询
-    let lastTs = 0;              // 上次写入时间戳，保证单调递增
-    let hostUpdated = false;     // 封面域名今日是否已更新，避免重复读 meta
+    let readSet = new Set();     // 已读漫画 id 集合，用于 isNew 判断，避免重复计数
+    let addedCount = 0;          // 本页新增已读数，显示在统计栏右侧
+    let totalCount = 0;          // 数据库总数，初始化时读一次后内存维护，避免每次点击都 count 查库
+    let lastTs = 0;              // 上次写入时间戳，保证 ts 单调递增（同一毫秒内多次写入时 +1）
+    let hostUpdated = false;     // 封面域名今日是否已更新，内存标记，避免每次点击都读 meta 表
 
     // =========================
     // 打开数据库
+    // 首次运行时创建 read 表（主键 id，idx_ts 索引）和 meta 表
     // =========================
 
     function openDB() {
@@ -66,6 +67,7 @@
             req.onupgradeneeded = e => {
                 const d = e.target.result;
                 const store = d.createObjectStore(STORE, { keyPath: 'id' });
+                // idx_ts 索引：历史页游标分页按时间倒序遍历，unique:false 允许极端情况下 ts 相同
                 store.createIndex('idx_ts', 'ts', { unique: false });
                 d.createObjectStore(META, { keyPath: 'key' });
             };
@@ -75,7 +77,9 @@
     }
 
     // =========================
-    // meta 表读写
+    // 读取 meta 表中的单个值
+    // @param {string} key - meta 键名
+    // @returns {Promise<any>} 对应的 value，不存在时返回 null
     // =========================
 
     function getMeta(key) {
@@ -86,6 +90,12 @@
         });
     }
 
+    // =========================
+    // 写入 meta 表中的单个值
+    // @param {string} key   - meta 键名
+    // @param {any}    value - 要存储的值
+    // =========================
+
     function setMeta(key, value) {
         return new Promise((resolve, reject) => {
             const req = db.transaction(META, 'readwrite').objectStore(META).put({ key, value });
@@ -95,7 +105,8 @@
     }
 
     // =========================
-    // 获取全部记录（Gist 同步用）
+    // 获取全部漫画记录（Gist 同步用，不排序）
+    // @returns {Promise<Array<{id, title, ts, coverPath}>>}
     // =========================
 
     function getAllRecords() {
@@ -108,7 +119,11 @@
 
     // =========================
     // 批量查询指定 id 列表（Promise.all 并发，同一事务）
-    // 返回数组顺序与传入 ids 一致，未找到为 null
+    // 比 getAllRecords 更高效：只读页面上存在的漫画，不读全量数据
+    // 返回数组顺序与传入 ids 严格一致，未找到的位置为 null
+    // onerror 用 resolve(null) 而非 reject，避免单条出错导致整体挂起
+    // @param {number[]} ids
+    // @returns {Promise<Array<{id, title, ts, coverPath}|null>>}
     // =========================
 
     function queryByIds(ids) {
@@ -124,7 +139,13 @@
     }
 
     // =========================
-    // 新增或更新一条记录（put 语义，ts 单调递增）
+    // 新增或更新一条漫画记录
+    // put 语义：id 已存在则覆盖（更新 ts/coverPath），不存在则插入
+    // ts 取 Date.now() 与 lastTs+1 的较大值，保证单调递增
+    // @param {number} id        - 漫画 id
+    // @param {string} title     - 漫画标题
+    // @param {string} coverPath - 封面路径段（不含域名前缀）
+    // @returns {Promise<number>} 本次写入的毫秒时间戳 ts
     // =========================
 
     function saveComic(id, title, coverPath) {
@@ -139,7 +160,9 @@
     }
 
     // =========================
-    // 获取数据库总数
+    // 获取数据库漫画总数
+    // 仅在 init 时调用一次，之后由内存变量 totalCount 维护
+    // @returns {Promise<number>}
     // =========================
 
     function getCount() {
@@ -151,7 +174,9 @@
     }
 
     // =========================
-    // 批量写入（云端恢复用，add 语义，id 冲突跳过）
+    // 批量写入漫画记录（云端恢复用）
+    // add 语义：id 已存在（主键冲突）时跳过，保留本地原有数据
+    // @param {Array<{id, title, ts, coverPath}>} records
     // =========================
 
     function saveBatch(records) {
@@ -163,6 +188,7 @@
                     id: r.id, title: r.title || '',
                     ts: r.ts || 0, coverPath: r.coverPath || '',
                 });
+                // 忽略单条 add 失败（id 重复时主键冲突），不影响其余条目
                 req.onerror = () => { };
             });
             tx.oncomplete = resolve;
@@ -171,7 +197,7 @@
     }
 
     // =========================
-    // 清空本地记录
+    // 清空本地 read 表所有记录
     // =========================
 
     function clearAll() {
@@ -183,7 +209,9 @@
     }
 
     // =========================
-    // 时间戳 → "YYYY-MM-DD"
+    // 将毫秒时间戳转为 "YYYY-MM-DD" 字符串（本地时间）
+    // @param {number} ts - 毫秒时间戳
+    // @returns {string}
     // =========================
 
     function tsToDate(ts) {
@@ -192,10 +220,14 @@
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     }
 
+    // 获取今天的日期字符串，供 Gist 同步和 meta 更新判断用
     function today() { return tsToDate(Date.now()); }
 
     // =========================
-    // 从 URL 提取漫画 id
+    // 从 URL 中提取漫画 id（数字）
+    // 匹配 aid-{数字} 格式
+    // @param {string} url
+    // @returns {number|null}
     // =========================
 
     function extractId(url) {
@@ -204,8 +236,12 @@
     }
 
     // =========================
-    // 从封面 URL 提取数字路径段（不含域名）
-    // 取末尾三段数字 + 后缀，不依赖固定路径前缀
+    // 从封面完整 URL 中提取"数字路径段"（不含域名）
+    // 取路径末尾三段数字 + 后缀，不依赖固定路径前缀，适配域名或路径结构变化
+    // 例：https://t4.wnacgimg.date/data/t/3604/81/17787801126284.jpg
+    //     → "data/t/3604/81/17787801126284.jpg"
+    // @param {string} url - 封面完整 URL
+    // @returns {string} 路径段，失败返回空串
     // =========================
 
     function extractCoverPath(url) {
@@ -219,7 +255,10 @@
     }
 
     // =========================
-    // 从封面 URL 提取域名前缀
+    // 从封面完整 URL 中提取域名前缀（协议 + 域名）
+    // 例：https://t4.wnacgimg.date/... → "https://t4.wnacgimg.date"
+    // @param {string} url
+    // @returns {string} 域名前缀，失败返回空串
     // =========================
 
     function extractHost(url) {
@@ -227,7 +266,10 @@
     }
 
     // =========================
-    // 每日更新封面域名前缀（内存标记避免重复读 meta）
+    // 每日更新封面域名前缀（coverHost）
+    // 先用内存标记 hostUpdated 判断，已更新过直接跳过，避免每次点击都读 meta
+    // 再对比 meta 中的上次更新日期，每日仅写入一次
+    // @param {string} coverUrl - 封面完整 URL（从页面中提取）
     // =========================
 
     async function refreshHostIfNeeded(coverUrl) {
@@ -241,17 +283,23 @@
         hostUpdated = true;
     }
 
+    // =========================
+    // 获取 meta 中存储的封面域名前缀
+    // @returns {Promise<string>} 如 "https://t4.wnacgimg.date"，未存储返回空串
+    // =========================
+
     async function getCoverHost() {
         return (await getMeta('coverHost')) || '';
     }
 
     // =========================
-    // 注入样式
+    // 注入已读相关样式（含历史记录面板样式）
     // =========================
 
     function addStyle() {
         const s = document.createElement('style');
         s.innerHTML = /*css*/`
+            /* 已读条目整体变灰 */
             .wn-read {
                 opacity: 0.7 !important;
                 filter: grayscale(30%) !important;
@@ -262,6 +310,7 @@
             .wn-read-link { color: #777 !important; }
             .wn-read-link:visited { color: #555 !important; }
 
+            /* 阅读日期标签 */
             .wn-date {
                 display: block !important;
                 float: none !important;
@@ -274,6 +323,7 @@
                 font-weight: normal;
             }
 
+            /* 顶部统计栏 */
             #wn-stats {
                 display: flex;
                 align-items: center;
@@ -288,12 +338,15 @@
             }
             #wn-stats span { display: inline-block; line-height: 1; }
 
+            /* ── 历史记录面板 ── */
             #wn-hist-panel {
                 display: none;
                 padding: 0;
                 background: #fff;
                 border-top: 1px solid #eee;
             }
+
+            /* 历史记录每行：封面 + 信息 */
             .wn-hist-item {
                 display: flex;
                 align-items: center;
@@ -305,6 +358,8 @@
                 color: inherit;
             }
             .wn-hist-item:active { background: #f5f5f5; }
+
+            /* 封面图 */
             .wn-hist-cover {
                 width: 56px;
                 height: 80px;
@@ -313,6 +368,8 @@
                 background: #eee;
                 flex-shrink: 0;
             }
+
+            /* 封面占位（加载失败 / 无封面） */
             .wn-hist-no-cover {
                 width: 56px;
                 height: 80px;
@@ -325,6 +382,7 @@
                 font-size: 11px;
                 color: #aaa;
             }
+
             .wn-hist-info { flex: 1; overflow: hidden; }
             .wn-hist-title {
                 font-size: 14px;
@@ -335,6 +393,7 @@
             }
             .wn-hist-date { font-size: 12px; color: #aaa; margin-top: 4px; }
 
+            /* 分页器 */
             #wn-hist-pager {
                 display: flex;
                 justify-content: center;
@@ -367,7 +426,7 @@
     }
 
     // =========================
-    // 标记元素为已读
+    // 将指定元素标记为已读（整体变灰，链接变色）
     // =========================
 
     function markRead(el) {
@@ -377,15 +436,20 @@
     }
 
     // =========================
-    // 在指定元素附近插入阅读日期
-    // inside=true  → 插入到目标元素内部末尾
-    // inside=false → 插入到目标元素后面（兄弟节点）
+    // 在指定元素附近插入阅读日期 span，防止重复插入
+    // inside=true  → appendChild 到目标元素内部末尾（默认）
+    // inside=false → insertAdjacentElement('afterend') 插到目标元素后面（兄弟节点）
+    // @param {Element} parent  - 漫画所在的容器元素
+    // @param {string}  sel     - 目标元素 CSS 选择器
+    // @param {number}  ts      - 毫秒时间戳（显示为日期字符串）
+    // @param {boolean} inside  - 插入位置模式
     // =========================
 
     function showDate(parent, sel, ts, inside = true) {
         if (!ts) return;
         const target = parent.querySelector(sel);
         if (!target) return;
+        // 防止重复插入
         if (inside ? target.querySelector('.wn-date')
             : target.nextElementSibling?.classList.contains('wn-date')) return;
         const span = document.createElement('span');
@@ -395,7 +459,8 @@
     }
 
     // =========================
-    // 更新顶部统计栏（使用内存中的 totalCount，不查数据库）
+    // 更新顶部统计栏
+    // 直接读内存变量 totalCount / addedCount，不查数据库
     // =========================
 
     function updateStats() {
@@ -403,6 +468,10 @@
         if (!el) return;
         el.innerHTML = `<span>${totalCount}</span><span>|</span><span>${addedCount}</span>`;
     }
+
+    // =========================
+    // 在页面 header 中插入统计栏
+    // =========================
 
     async function createStats() {
         const header = document.querySelector('.header');
@@ -414,12 +483,12 @@
     }
 
     // =========================
-    // 通用点击处理：保存记录、标记已读、更新统计
-    // 抽出三个页面处理函数中重复的点击逻辑
-    // @param {number}   id         - 漫画 id
-    // @param {string}   title      - 漫画标题
-    // @param {Function} getCoverUrl - 返回封面完整 URL 的函数
-    // @param {Function} onSaved    - 保存成功后的回调 (ts) => void，负责调用 markRead/showDate
+    // 通用点击处理：保存记录、更新内存状态、触发回调、刷新统计栏
+    // 抽出三个页面处理函数（albums / search / ranking）中重复的点击逻辑
+    // @param {number}   id          - 漫画 id
+    // @param {string}   title       - 漫画标题
+    // @param {Function} getCoverUrl - 无参函数，返回封面完整 URL
+    // @param {Function} onSaved     - 保存成功后的回调 (ts) => void，负责调用 markRead / showDate
     // =========================
 
     async function handleClick(id, title, getCoverUrl, onSaved) {
@@ -429,13 +498,14 @@
         const ts = await saveComic(id, title, coverPath);
         const isNew = !readSet.has(id);
         readSet.add(id);
+        // 只有首次点击才计入新增，重复点击（更新 ts）不重复计数
         if (isNew) { addedCount++; totalCount++; }
         onSaved(ts);
         updateStats();
     }
 
     // =========================
-    // 数据管理 UI
+    // 数据管理 UI（全部删除 / 全部上传）
     // =========================
 
     function createMgmtUI() {
@@ -445,6 +515,7 @@
         const classCon = classBox.querySelector('#classCon');
         if (!classTit || !classCon) return;
 
+        // 添加「数据管理」tab
         const li = document.createElement('li');
         li.innerHTML = '<a href="javascript:void(0)" id="wn-mgmt-tab">数据管理</a>';
         classTit.appendChild(li);
@@ -461,6 +532,7 @@
         `;
         classCon.appendChild(panel);
 
+        // tab 点击切换显示/隐藏，同时收起历史面板
         li.querySelector('#wn-mgmt-tab').addEventListener('click', () => {
             const v = panel.style.display !== 'none';
             panel.style.display = v ? 'none' : 'block';
@@ -468,6 +540,7 @@
             if (hp) hp.style.display = 'none';
         });
 
+        // ── 全部删除 ──
         document.getElementById('wn-btn-del').addEventListener('click', async () => {
             const msg = document.getElementById('wn-mgmt-msg');
             if (!confirm('确认删除本地所有已读记录？此操作不可恢复。')) return;
@@ -484,6 +557,7 @@
             }
         });
 
+        // ── 全部上传 ──
         document.getElementById('wn-btn-push').addEventListener('click', async () => {
             const msg = document.getElementById('wn-mgmt-msg');
             try {
@@ -500,6 +574,7 @@
 
     // =========================
     // 历史记录 UI
+    // 点击 tab 展开面板，按时间戳倒序显示漫画列表，每页 10 条，含分页器
     // =========================
 
     function createHistUI() {
@@ -509,15 +584,18 @@
         const classCon = classBox.querySelector('#classCon');
         if (!classTit || !classCon) return;
 
+        // 添加「历史记录」tab
         const li = document.createElement('li');
         li.innerHTML = '<a href="javascript:void(0)" id="wn-hist-tab">历史记录</a>';
         classTit.appendChild(li);
 
+        // 创建历史面板容器（列表区 + 分页器）
         const panel = document.createElement('div');
         panel.id = 'wn-hist-panel';
         panel.innerHTML = '<div id="wn-hist-list"></div><div id="wn-hist-pager"></div>';
         classCon.appendChild(panel);
 
+        // tab 点击：切换显示/隐藏，每次展开重新加载第 1 页，同时收起数据管理面板
         li.querySelector('#wn-hist-tab').addEventListener('click', () => {
             const v = panel.style.display !== 'none';
             if (v) { panel.style.display = 'none'; return; }
@@ -529,18 +607,26 @@
     }
 
     // =========================
-    // 用 idx_ts 游标倒序读取指定分页
+    // 用 idx_ts 游标按时间倒序读取指定分页的记录
+    // 通过 advance(offset) 跳过前面页的数据，只读 size 条，不加载全量数据
+    // 无论数据库多大，内存占用和耗时恒定
+    // @param {number} offset - 跳过的条数（= (页码-1) * 每页条数）
+    // @param {number} size   - 每页条数
+    // @returns {Promise<Array<{id, title, ts, coverPath}>>}
     // =========================
 
     function readPageByTs(offset, size) {
         return new Promise((resolve, reject) => {
             const idx = db.transaction(STORE, 'readonly').objectStore(STORE).index('idx_ts');
+            // 'prev' 方向：从最大 ts（最新）往前遍历，实现时间倒序
             const req = idx.openCursor(null, 'prev');
             const results = [];
             let skipped = false;
             req.onsuccess = e => {
                 const cur = e.target.result;
+                // 游标为 null 表示已遍历完
                 if (!cur) { resolve(results); return; }
+                // 第一次到达时，用 advance 跳过前 offset 条，直接跳到目标页起点
                 if (!skipped) {
                     skipped = true;
                     if (offset > 0) { cur.advance(offset); return; }
@@ -552,6 +638,12 @@
             req.onerror = () => reject(req.error);
         });
     }
+
+    // =========================
+    // 渲染历史记录指定页
+    // 用内存中的 totalCount 计算总页数，避免重复 count 查库
+    // @param {number} page - 目标页码（从 1 开始）
+    // =========================
 
     async function renderHistPage(page) {
         const PAGE = 10;
@@ -577,10 +669,12 @@
             const coverUrl = (host && r.coverPath) ? `${host}/${r.coverPath}` : '';
             const comicUrl = `https://${location.hostname}/photos-index-aid-${r.id}.html`;
 
+            // 行容器：<a> 标签，点击先更新 ts 再跳转
             const item = document.createElement('a');
             item.className = 'wn-hist-item';
             item.href = comicUrl;
 
+            // 封面图或占位块（两处复用 noCover()）
             if (coverUrl) {
                 const img = document.createElement('img');
                 img.className = 'wn-hist-cover';
@@ -600,6 +694,7 @@
             `;
             item.appendChild(info);
 
+            // 点击历史条目：更新 ts（使其排到历史最前），然后跳转
             item.addEventListener('click', async e => {
                 e.preventDefault();
                 try { await saveComic(r.id, r.title, r.coverPath); } catch { }
@@ -612,6 +707,11 @@
         renderPager(pagerEl, cur, totalPages);
     }
 
+    // =========================
+    // 创建封面占位块（加载失败 / 无封面时使用）
+    // 抽成函数避免两处重复创建相同结构
+    // =========================
+
     function noCover() {
         const d = document.createElement('div');
         d.className = 'wn-hist-no-cover';
@@ -620,7 +720,11 @@
     }
 
     // =========================
-    // 分页器
+    // 渲染分页器按钮
+    // 显示「上一页」「页码」「下一页」，超过 7 页时做省略号折叠
+    // @param {Element} el    - 分页器容器
+    // @param {number}  cur   - 当前页码
+    // @param {number}  total - 总页数
     // =========================
 
     function renderPager(el, cur, total) {
@@ -647,6 +751,14 @@
         if (cur < total) el.appendChild(btn('›', cur + 1));
     }
 
+    // =========================
+    // 构建分页器页码数组，超出范围用 '...' 代替
+    // 最多显示：首页、末页、当前页前后各 1 页，共 7 个可见项
+    // @param {number} cur   - 当前页
+    // @param {number} total - 总页数
+    // @returns {Array<number|string>}
+    // =========================
+
     function buildPageRange(cur, total) {
         if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
         const set = new Set([1, total]);
@@ -659,7 +771,9 @@
     }
 
     // =========================
-    // Gist 操作
+    // 从 Gist 拉取云端数据
+    // 格式：{ id: { title, ts, coverPath } }
+    // @returns {Promise<Array<{id, title, ts, coverPath}>>}
     // =========================
 
     function fetchGist() {
@@ -676,6 +790,12 @@
             });
     }
 
+    // =========================
+    // 将漫画记录上传到 Gist
+    // 格式：{ id: { title, ts, coverPath } }
+    // @param {Array<{id, title, ts, coverPath}>} records
+    // =========================
+
     function pushGist(records) {
         const data = {};
         records.forEach(r => { data[r.id] = { title: r.title || '', ts: r.ts || 0, coverPath: r.coverPath || '' }; });
@@ -691,7 +811,11 @@
     }
 
     // =========================
-    // 每日 Gist 同步
+    // 每日同步逻辑（Gist ↔ 本地 IndexedDB）
+    // 每天第一次打开时执行：
+    //   云端独有 → 写入本地，更新 readSet 和 totalCount
+    //   本地独有 → 推送合并到云端
+    //   一致     → 无操作
     // =========================
 
     async function syncGist() {
@@ -709,7 +833,7 @@
             if (fromCloud.length > 0) {
                 await saveBatch(fromCloud);
                 fromCloud.forEach(r => readSet.add(r.id));
-                totalCount += fromCloud.length;
+                totalCount += fromCloud.length; // 同步恢复的条数计入内存总数
             }
             if (toCloud.length > 0) {
                 await pushGist([...local, ...fromCloud]);
@@ -723,10 +847,12 @@
     }
 
     // =========================
-    // 处理 albums 列表页
+    // 处理 albums 漫画列表页
+    // 封面链接在 .ImgA，标题在 .txtA
     // =========================
 
     function processAlbums() {
+        // 收集页面所有漫画条目
         const items = [];
         document.querySelectorAll('li').forEach(li => {
             const imgA = li.querySelector('.ImgA');
@@ -736,6 +862,7 @@
             items.push({ li, imgA, id, title: li.querySelector('.txtA')?.textContent.trim() || '' });
         });
 
+        // 批量查询已读记录，标记页面上已读的漫画
         queryByIds(items.map(it => it.id)).then(results => {
             results.forEach((rec, i) => {
                 if (!rec) return;
@@ -746,6 +873,7 @@
             });
         });
 
+        // 绑定点击事件，点击后保存记录并标记已读
         items.forEach(({ li, imgA, id, title }) => {
             li.querySelectorAll('.ImgA, .txtA').forEach(a => {
                 a.addEventListener('click', () => handleClick(
@@ -759,6 +887,7 @@
 
     // =========================
     // 处理搜索结果页
+    // 封面链接在 .ImgA，标题在 .ImgA span
     // =========================
 
     function processSearch() {
@@ -791,7 +920,9 @@
     }
 
     // =========================
-    // 处理排行页
+    // 处理 ranking 排行页
+    // 封面在 .itemImg img，标题在 .itemTxt .title
+    // 日期插在 .title 后面（外部兄弟节点模式，inside=false）
     // =========================
 
     function processRanking() {
@@ -826,7 +957,9 @@
     }
 
     // =========================
-    // 初始化
+    // 初始化入口
+    // 顺序：注入样式 → 开启DB → 每日Gist同步
+    //       → 读取总数到内存 → 统计栏 → 数据管理UI → 历史记录UI → 分发页面处理
     // =========================
 
     async function init() {
@@ -834,7 +967,7 @@
         await openDB();
         await syncGist();
 
-        totalCount = await getCount(); // 初始化时读一次，之后内存维护
+        totalCount = await getCount(); // 初始化时读一次，之后内存维护，不再查库
 
         await createStats();
         createMgmtUI();
