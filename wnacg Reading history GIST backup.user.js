@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         wnacg Reading history GIST backup2
-// @name:zh-CN   绅士漫画已读记录-移动端2
+// @name         wnacg Reading history GIST backup
+// @name:zh-CN   绅士漫画已读记录-移动端
 // @namespace    绅士漫画
-// @version      2026-05-19
+// @version      2026年5月21日 04:40:45
 // @description  仅支持移动端，自动记录已读漫画 + IndexedDB + 实时变灰 + 页面新增统计 + Gist 每日同步 + 阅读日期显示 + 搜索页支持 + 历史记录页
 // @icon         https://wnacg.com/favicon.ico
 // @match        https://*.wnacg.ru/*
@@ -17,6 +17,9 @@
 // @match        https://www.wn02.cfd/*
 // @match        https://www.wn02.shop/*
 // @match        https://www.wn03.cfd/*
+// @match        https://www.wn03.shop/*
+// @match        https://www.wn04.cfd/*
+// @match        https://www.wn04.shop/*
 // @match        https://www.wn03.shop/*
 // @match        https://www.wn04.cfd/*
 // @match        https://www.wn04.shop/*
