@@ -4,7 +4,7 @@
 // @namespace    绅士漫画
 // @description:zh-CN 仅支持移动端，更新排行搜索页重做排列样式，点击图片直接打开slide阅读页，，点击日期一键复制标题。
 // @description Mobile only. Redesign page layout, open slide reader by clicking covers, copy title by clicking date.
-// @version      2026-05-14 17:49:22
+// @version      2026-05-20 08:44:07
 // @icon         https://wnacg.com/favicon.ico
 // @match        https://*.wnacg.ru/*
 // @match        https://*.wnacg.com/*
@@ -117,92 +117,73 @@ font-size: 15px !important; /* 强制将信息文字缩小至 12 像素，与标
 } /* 结束信息标签样式定义 */
 
     /* =========================
-       topImgCon 样式
+       ranking页topImgCon 样式
     ========================= */
 
     /* 整个卡片 */
     #topImgCon .itemBox{
-
         all: unset;
-
         display: flex;
         gap: 6px;
-
         width: 100%;
         padding: 6px;
-
         box-sizing: border-box;
-
         position: relative;
-
         border-bottom: 1px solid #ddd;
-
         align-items: flex-start;
-
-        overflow: hidden;
-
-        clear: both;
+        overflow: hidden;/* 当前没作用 */
+        clear: both;/* 不清楚作用 */
     }
 
-    /* 左侧图片区域 */
+    /* 左侧区域外层容器 */
     #topImgCon .itemImg{
         width: 200px;
-        flex-shrink: 0;
-
-        height: auto;
+        height: auto;/* 覆写原有height: 103px; */
+        flex-shrink: 0;/* 不清楚作用 */
     }
 
     /* 图片 */
-    #topImgCon .itemImg img{
-        width: 100%;
+    #topImgCon .itemImg img{/* 当前全没用 */
+        width: 100%;/* 覆写原有width: 100%; */
         height: auto;
-
         display: block;
-
-        border-radius: 6px;
     }
 
-    /* 右侧文字区域 */
+    /* 右侧区域外层容器 */
     #topImgCon .itemTxt{
         flex: 1;
-
         display: flex;
         flex-direction: column;
-
-        min-width: 0;
-
+        height: auto;/* 覆写原有height: 114px; */
+        min-width: 0;/*设大让小屏显示.txtItme栏但会遮挡标题*/
         margin: 0 !important;
         padding: 0 !important;
+        /* height: 266; 网页原有*/
     }
 
-    /* 标题 */
-    #topImgCon .itemTxt .title{
-        height: auto !important;
-
-        overflow: visible !important;
-        white-space: normal !important;
-
-        line-height: 1.5;
-
-        margin: 0 !important;
-        padding: 0 !important;
-    }
-
-    /* 对直接子元素清楚 float */
-    #topImgCon .itemTxt > *{
+    /* 对直接子元素 */
+    #topImgCon .itemTxt > *{/* 好像没用到 */
         position: static !important;
         float: none !important;
     }
 
+    /* 文字标题 */
+    #topImgCon .itemTxt .title{
+        height: 180px;/* 重要 */
+        line-height: 1.5;
+        overflow: scroll;/* 超出可滚动 */
+        white-space: normal !important;/* 好像没用 */
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+
     /* 信息行 */
     #topImgCon .itemTxt .txtItme{
-        margin: 0 0 6px 0 !important;
-        padding: 0 !important;
-
-        font-size: 13px;
-        line-height: 1.4;
-
-        color: #666;
+        min-height: 15;
+        max-height: 30;
+        height: auto;/* 重要 覆盖原有height: 15px;*/
+        overflow: hidden;
+        margin: 0 !important;
     }
 
     /* 排名徽章 */
@@ -330,9 +311,8 @@ font-size: 15px !important; /* 强制将信息文字缩小至 12 像素，与标
 
                 const imgA = li.querySelector("a.ImgA.autoHeight[href]");
                 //Span是search页面包含title的元素，但无法被添加href，也就是不能像ablums那样跳转
-                const txtA = li.querySelector('.txtA') || imgA.querySelector('span');
+                const txtA = li.querySelector(".txtA") || imgA.querySelector("span");
                 const info = li.querySelector(".info");
-
 
                 // txtA 使用 imgA 链接
                 if (imgA && txtA) {
