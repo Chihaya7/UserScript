@@ -4,7 +4,7 @@
 // @namespace    绅士漫画
 // @description:zh-CN 仅支持移动端，更新排行搜索页重做排列样式，点击图片直接打开slide阅读页，，点击日期一键复制标题。
 // @description Mobile only. Redesign page layout, open slide reader by clicking covers, copy title by clicking date.
-// @version      2026-05-20 03:59:52
+// @version      2026年5月21日 04:45:22
 // @icon         https://wnacg.com/favicon.ico
 // @match        https://*.wnacg.ru/*
 // @match        https://*.wnacg.com/*
@@ -21,9 +21,6 @@
 // @match        https://www.wn03.shop/*
 // @match        https://www.wn04.cfd/*
 // @match        https://www.wn04.shop/*
-// @match        https://www.wn05.cfd/*
-// @match        https://www.wn05.shop/*
-// @match        https://www.wn08.ru/*
 // @downloadURL  https://raw.githubusercontent.com/Chihaya7/Database/refs/heads/master/wnacg Layout Redesign Mobile.user.js
 // @updateURL    https://raw.githubusercontent.com/Chihaya7/Database/refs/heads/master/wnacg Layout Redesign Mobile.user.js
 // @run-at       document-start
@@ -50,10 +47,10 @@
 
             /* li 变成两列 grid */
              #classify_container li { /* 选中搜索页漫画列表中的每一个具体的漫画卡片条目 */
-                display: grid !important; /* 核心：强制将每一个条目卡片开启强大的网格（Grid）二维布局模式 */
+                display: grid !important; /* 核心：强制将每一个条目卡片开启网格（Grid）二维布局模式 */
 
-                grid-template-columns: minmax(120px, 60%) 1fr !important;
-                grid-template-rows: 1fr auto !important; /* 定义网格行高：第一行标题自适应高度，第二行 info 信息行自动包裹高度 */
+                grid-template-columns: 54% 1fr !important;
+               /*  grid-template-rows:  minmax(15px, 60%) auto !important; */ /* 定义网格行高：第一行标题自适应高度，第二行 info 信息行自动包裹高度 */
                 width: 100% !important; /* 强行让每个漫画条目卡片的宽度填满屏幕的 100% */
 
                 box-sizing: border-box !important; /* 设置盒模型为包含内边距与边框，确保整体宽度精准计算、绝不溢出 */
@@ -95,9 +92,9 @@ max-width: 400px !important;
     margin: 22px 0 0 0 !important;/* 共同：统一向下平移 22 像素。写在最后能成功覆盖上面 albums 的 margin:0 */
     padding: 5px !important;
 
-        overflow: visible !important; /*强制让溢出的内容保持可见 */
+        overflow: scroll !important; /*强制让溢出的内容保持可见 */
     height: auto !important; /*强制高度为自动，随文字多寡自由撑开 */
-
+    max-height:66%;
     position: static !important; /* search独有：彻底解除原网页自带的 absolute 绝对定位 */
     background: transparent !important; /* search独有：彻底清除原本压在图片下方时自带的半透明黑色背景 */
     border-radius: 0 !important; /* search独有：移除原本在压图模式下的倒角边框效果 */
@@ -122,27 +119,33 @@ font-size: 15px !important; /* 强制将信息文字缩小至 12 像素，与标
     /* =========================
        ranking页topImgCon 样式
     ========================= */
+    .select{/* 自动分列 */
+        display: grid!important;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 370px), 1fr));
+        gap: 3px; /* 列间距 */
+    }
 
     /* 整个卡片 */
     #topImgCon .itemBox{
         all: unset;
         display: flex;
+        align-items: stretch;/* flex-start; */
         gap: 6px;
         width: 100%;
         padding: 6px;
         box-sizing: border-box;
         position: relative;
         border-bottom: 1px solid #ddd;
-        align-items: flex-start;
-        overflow: hidden;/* 当前没作用 */
-        clear: both;/* 不清楚作用 */
+        overflow: hidden;/* 防止右侧超出 */
+        /* clear: both;/* 清除元素左右浮动 */ 
+
     }
 
     /* 左侧区域外层容器 */
     #topImgCon .itemImg{
-        width: 200px;
+        width: 54%;
         height: auto;/* 覆写原有height: 103px; */
-        flex-shrink: 0;/* 不清楚作用 */
+        flex-shrink: 0;/* 不压缩 */
     }
 
     /* 图片 */
@@ -154,10 +157,12 @@ font-size: 15px !important; /* 强制将信息文字缩小至 12 像素，与标
 
     /* 右侧区域外层容器 */
     #topImgCon .itemTxt{
-        flex: 1;
+        flex: 1;/* 自动占 剩下全部宽度 */
         display: flex;
         flex-direction: column;
         height: auto;/* 覆写原有height: 114px; */
+        min-height:114px;
+        contain: size;/* 忽略本列实际元素高度，强制和左侧一样 */
         min-width: 0;/*设大让小屏显示.txtItme栏但会遮挡标题*/
         margin: 0 !important;
         padding: 0 !important;
@@ -172,7 +177,8 @@ font-size: 15px !important; /* 强制将信息文字缩小至 12 像素，与标
 
     /* 文字标题 */
     #topImgCon .itemTxt .title{
-        height: 180px;/* 重要 */
+        height:auto;
+        max-height: 66%;/* 保证显示底端.txtItme */
         line-height: 1.5;
         overflow: scroll;/* 超出可滚动 */
         white-space: normal !important;/* 好像没用 */
@@ -183,10 +189,9 @@ font-size: 15px !important; /* 强制将信息文字缩小至 12 像素，与标
     /* 信息行 */
     #topImgCon .itemTxt .txtItme{
         min-height: 15;
-        max-height: 30;
-        height: auto;/* 重要 覆盖原有height: 15px;*/
+        height: auto;/*  覆盖原有height: 15px;*/
         overflow: hidden;
-        margin: 0 !important;
+        margin: 2px 0 0 0 !important;
     }
 
     /* 排名徽章 */
