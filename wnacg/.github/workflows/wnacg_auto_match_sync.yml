@@ -22,7 +22,8 @@ jobs:
           pip install requests beautifulsoup4
           
       - name: 运行更新脚本
-        run: python wnacg_auto_match_sync.py
+        run: cd wnacg
+          python wnacg_auto_match_sync.py
         
       - name: 检查是否有更改
         id: check_changes
@@ -38,7 +39,7 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add "wnacg Layout Redesign Mobile.user.js"
-          git add "wnacg Reading history GIST backup.user.js"
+          git add "wnacg/wnacg Layout Redesign Mobile.user.js"
+          git add "wnacg/wnacg Reading history GIST backup.user.js"
           git commit -m "🔄 自动更新match网址 - $(date +'%Y-%m-%d %H:%M:%S')"
           git push
