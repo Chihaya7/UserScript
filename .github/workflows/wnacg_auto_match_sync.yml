@@ -22,8 +22,7 @@ jobs:
           pip install requests beautifulsoup4
           
       - name: 运行更新脚本
-        run: cd wnacg
-          python wnacg_auto_match_sync.py
+        run: cd wnacg && python wnacg_auto_match_sync.py
         
       - name: 检查是否有更改
         id: check_changes
