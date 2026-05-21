@@ -23,8 +23,8 @@
 // @match        https://www.wn03.shop/*
 // @match        https://www.wn04.cfd/*
 // @match        https://www.wn04.shop/*
-// @downloadURL  https://raw.githubusercontent.com/Chihaya7/Database/refs/heads/master/wnacg Reading history GIST backup.user.js
-// @updateURL    https://raw.githubusercontent.com/Chihaya7/Database/refs/heads/master/wnacg Reading history GIST backup.user.js
+// @downloadURL  https://raw.githubusercontent.com/Chihaya7/UserScript/refs/heads/main/wnacg/wnacg Reading history GIST backup.user.js
+// @updateURL    https://raw.githubusercontent.com/Chihaya7/UserScript/refs/heads/main/wnacg/wnacg Reading history GIST backup.user.js
 // @run-at       document-start
 // @grant        none
 // ==/UserScript==
@@ -423,6 +423,9 @@
                 color: #fff;
                 border-color: #e74c3c;
                 font-weight: bold;
+            }
+            .TabBar .classBox .OperaBar li:nth-child(n) {/* 历史页会和albums页冲突 */
+                width: 25% !important;
             }
         `;
         document.head.appendChild(s);
@@ -986,7 +989,6 @@
             processRanking();
         }
     }
-
     init();
 
 })();
