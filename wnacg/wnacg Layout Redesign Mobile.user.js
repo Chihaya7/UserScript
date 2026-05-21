@@ -4,7 +4,7 @@
 // @namespace    绅士漫画
 // @description:zh-CN 仅支持移动端，更新排行搜索页重做排列样式，点击图片直接打开slide阅读页，，点击日期一键复制标题。
 // @description Mobile only. Redesign page layout, open slide reader by clicking covers, copy title by clicking date.
-// @version      2026年5月21日 04:45:22
+// @version      2026-05-21 04:33:02
 // @icon         https://wnacg.com/favicon.ico
 // @match        https://*.wnacg.ru/*
 // @match        https://*.wnacg.com/*
@@ -21,6 +21,9 @@
 // @match        https://www.wn03.shop/*
 // @match        https://www.wn04.cfd/*
 // @match        https://www.wn04.shop/*
+// @match        https://www.wn05.cfd/*
+// @match        https://www.wn05.shop/*
+// @match        https://www.wn08.ru/*
 // @downloadURL  https://raw.githubusercontent.com/Chihaya7/Database/refs/heads/master/wnacg Layout Redesign Mobile.user.js
 // @updateURL    https://raw.githubusercontent.com/Chihaya7/Database/refs/heads/master/wnacg Layout Redesign Mobile.user.js
 // @run-at       document-start
