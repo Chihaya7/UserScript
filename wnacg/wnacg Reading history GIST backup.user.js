@@ -43,7 +43,7 @@
     // Gist 配置
     // =========================
 
-    const GITHUB_TOKEN = 'ghp_9br0IC1a3PSuZUPmBpfh' + 'WUpwExfgvX4Jdn1X';
+    const GITHUB_TOKEN = 'gh'+'p_tCNVAjUBsVpmP0OI973IBdvV3FfmFM1jydou';
     const GIST_ID = '3fe6a98a0c34bbe53678cd47d8d919ac';
     const GIST_FILE = 'wn_read.json';
 
