@@ -43,7 +43,7 @@
     // Gist 配置
     // =========================
 
-    const GITHUB_TOKEN = 'gh'+'p_tCNVAjUBsVpmP0OI973IBdvV3FfmFM1jydou';
+    const GITHUB_TOKEN = 'gh' + 'p_tCNVAjUBsVpmP0OI973IBdvV3FfmFM1jydou';
     const GIST_ID = '3fe6a98a0c34bbe53678cd47d8d919ac';
     const GIST_FILE = 'wn_read.json';
 
@@ -348,12 +348,18 @@
             }
             #wn-stats span { display: inline-block; line-height: 1; }
 
+            .OperaBar{
+                margin-right:2px;
+            }
+
             /* ── 历史记录面板 ── */
             #wn-hist-panel {
                 display: none;
                 padding: 0;
                 background: #fff;
                 border-top: 1px solid #eee;
+                z-index:99;
+                position:relative;
             }
 
             /* 历史记录每行：封面 + 信息 */
@@ -525,8 +531,7 @@
         const classBox = document.querySelector('.TabBar .classBox');
         if (!classBox) return;
         const classTit = classBox.querySelector('#classTit');
-        const classCon = classBox.querySelector('#classCon');
-        if (!classTit || !classCon) return;
+        if (!classTit) return;
 
         // 添加「数据管理」tab
         const li = document.createElement('li');
@@ -535,7 +540,7 @@
 
         const panel = document.createElement('div');
         panel.id = 'wn-mgmt-panel';
-        panel.style.cssText = 'display:none;padding:12px 10px;background:#fff;border-top:1px solid #eee;';
+        panel.style.cssText = 'display:none;padding:12px 10px;background:#fff;border-top:1px solid #eee;z-index:99;position: relative; ';
         panel.innerHTML = `
             <div style="display:flex;gap:12px;flex-wrap:wrap;">
                 <button id="wn-btn-del" style="flex:1;min-width:120px;padding:10px 0;background:#e74c3c;color:#fff;border:none;border-radius:6px;font-size:15px;cursor:pointer;">🗑 全部删除</button>
@@ -543,7 +548,7 @@
             </div>
             <div id="wn-mgmt-msg" style="margin-top:10px;font-size:13px;color:#888;min-height:20px;line-height:1.6;"></div>
         `;
-        classCon.appendChild(panel);
+        classBox.appendChild(panel);
 
         // tab 点击切换显示/隐藏，同时收起历史面板
         li.querySelector('#wn-mgmt-tab').addEventListener('click', () => {
@@ -594,8 +599,7 @@
         const classBox = document.querySelector('.TabBar .classBox');
         if (!classBox) return;
         const classTit = classBox.querySelector('#classTit');
-        const classCon = classBox.querySelector('#classCon');
-        if (!classTit || !classCon) return;
+        if (!classTit) return;
 
         // 添加「历史记录」tab
         const li = document.createElement('li');
@@ -606,7 +610,7 @@
         const panel = document.createElement('div');
         panel.id = 'wn-hist-panel';
         panel.innerHTML = '<div id="wn-hist-list"></div><div id="wn-hist-pager"></div>';
-        classCon.appendChild(panel);
+        classBox.appendChild(panel);
 
         // tab 点击：切换显示/隐藏，每次展开重新加载第 1 页，同时收起数据管理面板
         li.querySelector('#wn-hist-tab').addEventListener('click', () => {
