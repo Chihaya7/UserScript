@@ -31,7 +31,7 @@
 // @match        https://www.wn07.cfd/*
 // @match        https://www.wn07.shop/*
 // @downloadURL  https://raw.githubusercontent.com/Chihaya7/UserScript/refs/heads/main/wnacg/wnacg Reading history GIST backup.user.js
-// @updateURL    https://raw.githubusercontent.com/Chihaya7/UserScript/refs/heads/main/wnacg/wnacg Reading history GIST backup.user.js
+// @updateURL    https://raw.githubusercontent.com/C------hihaya7/UserScript/refs/heads/main/wnacg/wnacg Reading history GIST backup.user.js
 // @run-at       document-end
 // @grant        none
 // ==/UserScript==
@@ -621,6 +621,9 @@
                 const records = await getAllRecords();
                 if (records.length === 0) { msg.textContent = '⚠️ 本地没有记录可上传。'; return; }
                 await pushGist(records);
+                // push 成功后更新基线，未同步计数归零
+                await setMeta('lastSyncCount', totalCount);
+                addedCount = 0;
                 msg.textContent = `✅ 已上传 ${records.length} 条记录到 Gist。`;
             } catch (e) {
                 msg.textContent = '❌ 上传失败：' + e.message;
