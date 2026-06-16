@@ -2,7 +2,7 @@
 // @name         wnacg Reading history GIST backup
 // @name:zh-CN   绅士漫画已读记录-移动端
 // @namespace    绅士漫画
-// @version      2026-06-12 16:28:27
+// @version      2026-06-16 17:36:21
 // @description  仅支持移动端，自动记录已读漫画 + IndexedDB + 实时变灰 + 页面新增统计 + Gist 每日同步 + 阅读日期显示 + 搜索页支持 + 历史记录页
 // @icon         https://wnacg.com/favicon.ico
 // @match        https://*.wnacg.ru/*
@@ -61,7 +61,7 @@
 
     let db = null;
     let readSet = new Set();     // 已读漫画 id 集合，用于 isNew 判断，避免重复计数
-    let addedCount = 0;          // 本页新增已读数，显示在统计栏右侧
+    let addedCount = 0;          // 自上次同步以来的新增已读数（跨页面持久化，同步成功后归零）
     let totalCount = 0;          // 数据库总数，初始化时读一次后内存维护，避免每次点击都 count 查库
     let lastTs = 0;              // 上次写入时间戳，保证 ts 单调递增（同一毫秒内多次写入时 +1）
     let hostUpdated = false;     // 封面域名今日是否已更新，内存标记，避免每次点击都读 meta 表
@@ -186,23 +186,60 @@
     // =========================
     // 批量写入漫画记录（云端恢复用）
     // add 语义：id 已存在（主键冲突）时跳过，保留本地原有数据
+    // 已改为put
     // @param {Array<{id, title, ts, coverPath}>} records
     // =========================
 
+    // function saveBatch(records) {
+    //     return new Promise((resolve, reject) => {
+    //         const tx = db.transaction(STORE, 'readwrite');
+    //         const store = tx.objectStore(STORE);
+    //         records.forEach(r => {
+    //             const req = store.put({
+    //                 id: r.id, title: r.title || '',
+    //                 ts: r.ts || 0, coverPath: r.coverPath || '',
+    //             });
+    //             // 忽略单条 add 失败（id 重复时主键冲突），不影响其余条目
+    //             req.onerror = () => { };
+    //         });
+    //         tx.oncomplete = resolve;
+    //         tx.onerror = reject;
+    //     });
+    // }
     function saveBatch(records) {
         return new Promise((resolve, reject) => {
             const tx = db.transaction(STORE, 'readwrite');
             const store = tx.objectStore(STORE);
+            // 记录失败ID，用于debug
+            const failIds = [];
+
             records.forEach(r => {
-                const req = store.add({
-                    id: r.id, title: r.title || '',
-                    ts: r.ts || 0, coverPath: r.coverPath || '',
+                const req = store.put({
+                    id: r.id,
+                    title: r.title || '',
+                    ts: r.ts || 0,
+                    coverPath: r.coverPath || '',
                 });
-                // 忽略单条 add 失败（id 重复时主键冲突），不影响其余条目
-                req.onerror = () => { };
+                // 不再空回调，打印失败日志
+                req.onerror = (e) => {
+                    e.preventDefault(); // 阻止事务直接失败
+                    failIds.push(r.id);
+                    console.warn(`[wn] 单条记录写入失败 id:${r.id}`, e.target.error);
+                };
             });
-            tx.oncomplete = resolve;
-            tx.onerror = reject;
+            tx.oncomplete = () => {
+                if (failIds.length > 0) {
+                    console.warn(`[wn] 批量写入完成，但有${failIds.length}条失败，失败ID：`, failIds);
+                    reject(new Error(`批量写入有${failIds.length}条失败`));
+                } else {
+                    console.log(`[wn] 批量写入成功，共${records.length}条`);
+                    resolve();
+                }
+            };
+            tx.onerror = (e) => {
+                console.error('[wn] IndexedDB事务整体失败', e.target.error);
+                reject(e.target.error);
+            };
         });
     }
 
@@ -565,6 +602,7 @@
             try {
                 msg.textContent = '删除中...';
                 await clearAll();
+                await setMeta('lastSyncCount', 0);
                 readSet.clear();
                 addedCount = 0;
                 totalCount = 0;
@@ -835,32 +873,98 @@
     //   一致     → 无操作
     // =========================
 
+    // 同步锁标识，防止并发执行
+    let isSyncing = false;
     async function syncGist() {
-        if (await getMeta('lastSync') === today()) return;
-        console.log('[wn] 开始每日同步...');
-        try {
-            const cloud = await fetchGist();
-            const cloudIds = new Set(cloud.map(r => r.id));
-            const local = await getAllRecords();
-            const localIds = new Set(local.map(r => r.id));
-
-            const fromCloud = cloud.filter(r => !localIds.has(r.id));
-            const toCloud = local.filter(r => !cloudIds.has(r.id));
-
-            if (fromCloud.length > 0) {
-                await saveBatch(fromCloud);
-                fromCloud.forEach(r => readSet.add(r.id));
-                totalCount += fromCloud.length; // 同步恢复的条数计入内存总数
-            }
-            if (toCloud.length > 0) {
-                await pushGist([...local, ...fromCloud]);
-            }
-
-            await setMeta('lastSync', today());
-            console.log(`[wn] 同步完成，本地${localIds.size}，云端${cloudIds.size}`);
-        } catch (e) {
-            console.warn('[wn] 同步失败', e);
+        // 并发拦截
+        if (isSyncing) {
+            console.log('[wn] 同步正在进行，跳过本次请求');
+            return false;
         }
+
+        // 判断今日是否已完成同步
+        const lastSyncDay = await getMeta('lastSync');
+        const todayStr = today();
+        if (lastSyncDay === todayStr) {
+            console.log('[wn] 今日已同步，无需重复执行');
+            return true;
+        }
+
+        isSyncing = true;
+        let syncSuccess = false;
+
+        try {
+            console.log('[wn] 开始每日同步...');
+            // 拉取两边全量数据
+            const cloud = await fetchGist();
+            const local = await getAllRecords();
+            const cloudMap = new Map(cloud.map(item => [item.id, item]));
+            const localMap = new Map(local.map(item => [item.id, item]));
+
+            // 1. 云端独有：本地不存在，下载到本地
+            const fromCloud = cloud.filter(r => !localMap.has(r.id));
+            // 2. 本地独有：云端不存在，需要上传
+            const toCloud = local.filter(r => !cloudMap.has(r.id));
+            //console.log('[wn] 待上传toCloud完整列表：', JSON.parse(JSON.stringify(toCloud)));
+            // 3. 两边都存在的ID：冲突数据，按更新时间覆盖
+            const conflictList = [];
+            const cloudKeep = [];
+            for (const [cid, cloudItem] of cloudMap) {
+                if (!localMap.has(cid)) {
+                    //仅云端有 → cloudKeep
+                    cloudKeep.push(cloudItem);
+                    continue;
+                }
+                const localItem = localMap.get(cid);
+                if (cloudItem.ts > localItem.ts) {
+                    //云端 ts 更大 → conflictList + cloudKeep
+                    conflictList.push(cloudItem);
+                    cloudKeep.push(cloudItem);
+                } else if (localItem.ts > cloudItem.ts) {
+                    //本地 ts 更大 → toCloud，丢弃云端旧数据
+                    toCloud.push(localItem);
+                } else {
+                    // ts 完全相等，版本一致，保留云端记录
+                    cloudKeep.push(cloudItem);
+                }
+            }
+
+            // 本地写入 云端新增 + 云端更新冲突数据到本地
+            const needSave = [...fromCloud, ...conflictList];
+            //console.log('[wn] needSave完整列表：', JSON.parse(JSON.stringify(needSave)));
+            if (needSave.length > 0) {
+                await saveBatch(needSave);
+                // 加入已读集合
+                fromCloud.forEach(r => readSet.add(r.id));
+                totalCount += fromCloud.length;
+            }
+
+            // 构造完整最新数据集：云端原有数据 + 本地新增/更新 
+            const finalUploadData = [...cloudKeep, ...toCloud];
+            if (toCloud.length > 0) {
+                console.log('finalUploadData', JSON.parse(JSON.stringify(finalUploadData)));
+                await pushGist(finalUploadData);
+            }
+
+            // 同步全部流程无异常，才标记今日同步完成
+            await setMeta('lastSync', todayStr);
+            // 同步成功后，记录当前本地总数作为基线，未同步计数归零
+            await setMeta('lastSyncCount', totalCount);
+            addedCount = 0;
+            syncSuccess = true;
+            console.log(`[wn] 同步完成 | 本地${localMap.size}，云端${cloudMap.size} | 
+                本地新增：${fromCloud.length}条，更新本地：${conflictList.length}条，总计${needSave.length}条。
+                云端保留：${cloudKeep.length}条，上传云端：${toCloud.length}条，总计${finalUploadData.length}条。`);
+        } catch (e) {
+            console.warn('[wn] 同步失败，今日不会标记同步完成，下次会重试', { error: e });
+            syncSuccess = false;
+        } finally {
+            // 无论成功失败，释放同步锁
+            isSyncing = false;
+        }
+
+        // 返回同步结果供上层判断
+        return syncSuccess;
     }
 
     // =========================
@@ -982,21 +1086,25 @@
     async function init() {
         addStyle();
         await openDB();
+        totalCount = await getCount(); // 初始化时读一次，之后内存维护，不再查库
         await syncGist();
 
-        totalCount = await getCount(); // 初始化时读一次，之后内存维护，不再查库
+        // 用上次同步时的总数作为基线，计算自上次同步以来的未同步新增数
+        // lastSyncCount 不存在（首次使用）时视为 0，避免 addedCount 出现负数
+        const lastSyncCount = (await getMeta('lastSyncCount')) ?? 0;
+        addedCount = Math.max(0, totalCount - lastSyncCount);
 
         await createStats();
-        createMgmtUI();
-        createHistUI();
-
-        if (document.querySelector('#classify_container')) {
-            (location.href.includes('/search/') || location.href.includes('/q/'))
-                ? processSearch()
-                : processAlbums();
+        if (location.href.includes('users_fav')) {
+            createMgmtUI();
+            createHistUI();
+        }
+        //<ul class="col_2" id="classify_container">
+        if (document.getElementById('classify_container')) {
+            location.href.includes('/q/') ? processSearch() : processAlbums();
         }
 
-        if (location.href.includes('ranking') || document.querySelector('#topImgCon .itemBox')) {
+        if (location.href.includes('ranking') && document.querySelector('#topImgCon .itemBox')) {
             processRanking();
         }
     }
