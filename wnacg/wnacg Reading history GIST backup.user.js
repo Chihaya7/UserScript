@@ -2,7 +2,7 @@
 // @name         wnacg Reading history GIST backup
 // @name:zh-CN   绅士漫画已读记录-移动端
 // @namespace    绅士漫画
-// @version      2026-06-16 17:36:21
+// @version      2026年6月25日 13:36:41
 // @description  仅支持移动端，自动记录已读漫画 + IndexedDB + 实时变灰 + 页面新增统计 + Gist 每日同步 + 阅读日期显示 + 搜索页支持 + 历史记录页
 // @icon         https://wnacg.com/favicon.ico
 // @match        https://*.wnacg.ru/*
@@ -1093,9 +1093,9 @@
         await syncGist();
 
         // 用上次同步时的总数作为基线，计算自上次同步以来的未同步新增数
-        // lastSyncCount 不存在（首次使用）时视为 0，避免 addedCount 出现负数
-        const lastSyncCount = (await getMeta('lastSyncCount')) ?? 0;
-        addedCount = Math.max(0, totalCount - lastSyncCount);
+        // lastSyncCount 不存在（首次使用）时视为 此时云端同步总数totalCount
+        const lastSyncCount = (await getMeta('lastSyncCount')) || totalCount;
+        addedCount = totalCount - lastSyncCount;
 
         await createStats();
         if (location.href.includes('users_fav')) {
