@@ -4,7 +4,7 @@
 // @namespace    绅士漫画
 // @description:zh-CN  仅支持移动端，更新排行搜索页重做排列样式，点击图片直接打开slide阅读页，，点击日期一键复制标题。
 // @description Mobile only. Redesign page layout, open slide reader by clicking covers, copy title by clicking date.
-// @version      2026-06-08 02:39:41
+// @version      2026-06-25 12:39:39
 // @icon         https://wnacg.com/favicon.ico
 // @match        https://*.wnacg.ru/*
 // @match        https://*.wnacg.com/*
@@ -361,17 +361,29 @@ font-size: 15px !important; /* 强制将信息文字缩小至 12 像素，与标
         // href index → slide
         // =========================
 
-        document
-            .querySelectorAll(
-                ".pic_box a[href], .itemImg a[href], a.ImgA.autoHeight[href]",
-            )
-            .forEach((a) => {
-                if (a.href.includes("index")) {
-                    a.href = a.href.replace(/index/g, "slide");
+        document.querySelectorAll(
+            ".pic_box a[href], .itemImg a[href], a.ImgA.autoHeight[href]"
+        ).forEach((a) => {
+            const indexHref = a.href;
+            if (indexHref.includes("index")) {
+                // 替换index为slide
+                const newHref = indexHref.replace(/index/g, "slide");
+                a.href = newHref;
+                a.target = "_blank";
 
-                    a.target = "_blank";
-                }
-            });
+                // 点击时请求原index地址,适配网页原生历史记录
+                a.addEventListener("click", function (e) {
+                    fetch(indexHref, {
+                        method: "HEAD",
+                        credentials: "include"
+                    }).then(res => {
+                        console.log("已请求index页面记录浏览", indexHref, res.status);
+                    }).catch(err => {
+                        console.warn("index head请求失败", err);
+                    });
+                });
+            }
+        });
     }
 
     // =========================
