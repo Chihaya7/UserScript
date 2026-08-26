@@ -4,7 +4,7 @@
 // @namespace    绅士漫画
 // @description:zh-CN  仅支持移动端，更新排行搜索页重做排列样式，点击图片直接打开slide阅读页，，点击日期一键复制标题。
 // @description Mobile only. Redesign page layout, open slide reader by clicking covers, copy title by clicking date.
-// @version      2026-08-26 04:52:39
+// @version      2026-08-26 10:29:21
 // @icon         https://wnacg.com/favicon.ico
 // @match        https://*.wnacg.ru/*
 // @match        https://*.wnacg.com/*
@@ -50,18 +50,20 @@
     style.textContent = /* css */ `
 
    /* =========================
-     albums更新,search搜索页面
+     albums更新,search搜索,推荐ul.col_3_2页面
     ========================= */
 
-    /* 容器改为单列块布局 */
-    #classify_container { /* 选中albums,search页面下的漫画列表外部大容器（ul 标签） */
-        display: block !important; /* 强制将外部大容器改为普通的块级布局，破除原有的多列限制 */
+    /* 选中albums,search,推荐页ul.col_3_2页面下的漫画列表外部大容器（ul 标签） */
+    #classify_container ,ul.col_3_2{ /* 自动分列 */
+        display: grid !important;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 370px), 1fr));
+        gap: 3px; /* 列间距 */
         white-space: normal !important; /* 强制允许内部文本正常换行，防止内容溢出屏幕宽度 */
 
     } /* 结束外部大容器样式的定义 */
 
     /* li 变成两列 grid */
-    #classify_container li { /* 选中搜索页漫画列表中的每一个具体的漫画卡片条目 */
+    #classify_container li , ul.col_3_2>li{ /* 选中搜索页漫画列表中的每一个具体的漫画卡片条目 */
         display: grid !important; /* 核心：强制将每一个条目卡片开启网格（Grid）二维布局模式 */
 
         grid-template-columns: 54% 1fr !important;
@@ -76,23 +78,23 @@
     } /* 结束条目卡片样式的定义 */
 
     /* a 消除自身盒子，子元素直接参与 li 的 grid */
-    #classify_container li a.ImgA { /* 选中包裹了图片和标题的超链接 a 标签 */
+    #classify_container li a.ImgA , ul.col_3_2>li a.ImgA { /* 选中包裹了图片和标题的超链接 a 标签 */
         display: contents !important; /* 顶级魔法：让 a 标签自身不参与排版，使其子元素（图片、标题）直接暴露给父级 Grid 容器 */
     } /* 结束超链接标签样式的定义 */
 
     /* 图片：左列，跨两行 */
-    #classify_container li a.ImgA img { /* 选中超链接内部的原生漫画封面图片 */
+    #classify_container li a.ImgA img , ul.col_3_2>li a.ImgA img { /* 选中超链接内部的原生漫画封面图片 */
         grid-column: 1 !important; /* 指定图片放置在网格的第一列（即最左侧区域） */
-        max-width: 400px !important;
         grid-row: 1 / 3 !important; /* 指定图片纵向跨越第一行和第二行，完美实现左侧长图独立占位的效果 */
-        width: 100% !important; /* 强制图片宽度百分之百填满左侧网格列设定的 200px 宽度 */
+        width: 100% !important; /* 强制图片宽度百分之百填满左侧网格列 */
         height: auto !important; /* 让图片高度根据宽度等比例自适应缩放，防止画面拉伸扭曲 */
         aspect-ratio: 3 / 4 !important; /* 无论图片宽度怎么变，始终保持 3:4 的漫画封面比例 */
         object-fit: cover !important; /* 若图片比例与格子不符，自动进行居中裁剪填充，确保排版整齐美观 */
     } /* 结束图片样式的定义 */
 
     #classify_container li a.ImgA span, /* 匹配 search 页面的标题 */
-        #classify_container > li .txtA{    /* 匹配 albums 页面的标题 */ 
+        #classify_container > li .txtA,/* 匹配 albums 页面的标题 */
+        ul.col_3_2>li a.txtA{/* 匹配 推荐 页面的标题 */
 
         /* 网格定位相同 */
         grid-column: 2 !important; /* 共同：两边都放置在网格的第二列（右侧文字区域） */
@@ -101,17 +103,18 @@
         /* 文字排版相同 */
         font-size: 14px !important;   /* 共同：两边字体大小统一调整为醒目的 19 像素 */
         line-height: 1.5 !important;  /* 共同：统一设置 1.5 倍的行高，防止多行时挤压 */
-        color: #333 !important;       /* 共同：统一修改为适合在白底上阅读的深灰色 */
 
         /* 顶部间距相同 */
         margin: 22px 0 0 0 !important;/* 共同：统一向下平移 22 像素。写在最后能成功覆盖上面 albums 的 margin:0 */
         padding: 5px !important;
 
+        color: #333 !important;       /* 共同：统一修改为适合在白底上阅读的深灰色 ,不加search页看不到标题文字*/
         /*overflow: scroll !important; 强制让溢出的内容保持可见 */
         overflow:auto !important;
         scrollbar-width: thin;
-        height: auto !important; /*强制高度为自动，随文字多寡自由撑开 */
-        max-height: 66%;
+        height: 185px !important;
+
+        /* search独有：*/
         position: static !important; /* search独有：彻底解除原网页自带的 absolute 绝对定位 */
         background: transparent !important; /* search独有：彻底清除原本压在图片下方时自带的半透明黑色背景 */
         border-radius: 0 !important; /* search独有：移除原本在压图模式下的倒角边框效果 */
@@ -119,7 +122,7 @@
 
     }
     /* info：右下 */
-    #classify_container li span.info { /* 选中列表中原本独立的、用来展示图片数量等信息的 info 标签 */
+    #classify_container li span.info ,ul.col_3_2>li span.info { /* 选中列表中原本独立的、用来展示图片数量等信息的 info 标签 */
         grid-column: 2 !important; /* 指定信息文本放置在网格的第二列（即右侧文字区域） */
         grid-row: 2 !important; /* 指定信息文本放置在网格的第二行（即右下角区域） */
         padding: 0 8px 8px !important; /* 精细调整内边距：上方不留空，左右和底部留出 8 像素维持视觉平衡 */
@@ -146,7 +149,7 @@
     #topImgCon .itemBox{
         all: unset;
         display: flex;
-        align-items: stretch;/* flex-start; */
+        align-items: stretch;/* flex 父容器高度为 auto 时，不会生效。 */
         gap: 6px;
         width: 100%;
         padding: 6px;
@@ -155,7 +158,6 @@
         border-bottom: 1px solid #ddd;
         overflow: hidden;/* 防止右侧超出 */
         /* clear: both;/* 清除元素左右浮动 */
-
     }
 
     /* 左侧区域外层容器 */
@@ -180,7 +182,7 @@
         height: auto;/* 覆写原有height: 114px; */
         min-height: 114px;
         contain: size;/* 忽略本列实际元素高度，强制和左侧一样 */
-        min-width: 0;/*设大让小屏显示.txtItme栏但会遮挡标题*/
+        min-width: 0;/*设大让小屏显示.txtItme栏会遮挡标题*/
         margin: 0 !important;
         padding: 0 !important;
         /* height: 266; 网页原有*/
@@ -218,7 +220,7 @@
         top: 10px;
         left: 10px;
     }
-
+ 
     /* =========================
        Toast 提示框
     ========================= */
