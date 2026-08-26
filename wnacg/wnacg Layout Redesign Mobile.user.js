@@ -241,7 +241,7 @@
     }
 
     /* 显示状态 */
-    .copyToast .showTosat{
+    .copyToast.showTosat{
         opacity: 1;
     }`;
 
