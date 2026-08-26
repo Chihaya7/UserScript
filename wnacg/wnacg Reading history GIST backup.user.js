@@ -35,7 +35,7 @@
 // @match        https://www.wn09.cfd/*
 // @match        https://www.wn09.shop/*
 // @downloadURL  https://raw.githubusercontent.com/Chihaya7/UserScript/refs/heads/main/wnacg/wnacg Reading history GIST backup.user.js
-// @updateURL    https://raw.githubusercontent.com/C------hihaya7/UserScript/refs/heads/main/wnacg/wnacg Reading history GIST backup.user.js
+// @updateURL    https://raw.githubusercontent.com/Chihaya7/UserScript/refs/heads/main/wnacg/wnacg Reading history GIST backup.user.js
 // @run-at       document-end
 // @grant        none
 // ==/UserScript==

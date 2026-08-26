@@ -328,6 +328,7 @@
 
             // 条目内执行 index→slide 替换
             replaceIndexToSlide(li);
+            return true;
         }
 
         // 处理单个 Ranking 页 itemBox 条目（完全复用你原逻辑）
@@ -384,9 +385,15 @@
         //  点击 info 复制 txtA 标题
         // =========================
         if (document.querySelector(".imgBox")) {
-            // 【原有逻辑】全量处理页面已有条目
+            // 【初始化全量处理】扫描当前页面已有的全部 li
             const initLis = document.querySelectorAll("#classify_container > li");
+            console.log(`[url脚本] 初始化：找到 ${initLis.length} 个 li`);
 
+            let initProcessed = 0;
+            initLis.forEach(li => {
+                if (processImgBoxLi(li)) initProcessed++;
+            });
+            console.log(`[url脚本] 初始化：实际处理 ${initProcessed} 个有效漫画条目`);
             // 【新增：兼容自动加载】监听列表容器，新增条目自动处理
             const listContainer = document.querySelector("#classify_container");
             const observer = new MutationObserver(mutations => {
