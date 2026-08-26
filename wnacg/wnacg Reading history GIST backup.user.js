@@ -2,7 +2,7 @@
 // @name         wnacg Reading history GIST backup
 // @name:zh-CN   绅士漫画已读记录-移动端
 // @namespace    绅士漫画
-// @version      2026-08-06 01:29:21
+// @version      2026-08-26 18:00:11
 // @description  仅支持移动端，自动记录已读漫画 + IndexedDB + 实时变灰 + 页面新增统计 + Gist 每日同步 + 阅读日期显示 + 搜索页支持 + 历史记录页
 // @icon         https://wnacg.com/favicon.ico
 // @match        https://*.wnacg.ru/*
@@ -35,7 +35,7 @@
 // @match        https://www.wn09.cfd/*
 // @match        https://www.wn09.shop/*
 // @downloadURL  https://raw.githubusercontent.com/Chihaya7/UserScript/refs/heads/main/wnacg/wnacg Reading history GIST backup.user.js
-// @updateURL    https://raw.githubusercontent.com/Chihaya7/UserScript/refs/heads/main/wnacg/wnacg Reading history GIST backup.user.js
+// @updateURL    https://raw.githubusercontent.com/C------hihaya7/UserScript/refs/heads/main/wnacg/wnacg Reading history GIST backup.user.js
 // @run-at       document-end
 // @grant        none
 // ==/UserScript==
@@ -496,7 +496,7 @@
     }
 
     // =========================
-    // 在指定元素附近插入阅读日期 span，防止重复插入
+    // 在指定元素附近插入阅读日期 a，防止重复插入
     // inside=true  → appendChild 到目标元素内部末尾（默认）
     // inside=false → insertAdjacentElement('afterend') 插到目标元素后面（兄弟节点）
     // @param {Element} parent  - 漫画所在的容器元素
@@ -512,10 +512,10 @@
         // 防止重复插入
         if (inside ? target.querySelector('.wn-date')
             : target.nextElementSibling?.classList.contains('wn-date')) return;
-        const span = document.createElement('span');
-        span.className = 'wn-date';
-        span.textContent = tsToDate(ts);
-        inside ? target.appendChild(span) : target.insertAdjacentElement('afterend', span);
+        const a = document.createElement('a'); a
+        a.className = 'wn-date';
+        a.textContent = tsToDate(ts);
+        inside ? target.appendChild(a) : target.insertAdjacentElement('afterend', a);
     }
 
     // =========================
@@ -977,17 +977,21 @@
     // =========================
     // 处理 albums 漫画列表页
     // 封面链接在 .ImgA，标题在 .txtA
+    // @param {Array<Element>} elements - 指定要处理的元素，不传则处理全部
     // =========================
-
-    function processAlbums() {
-        // 收集页面所有漫画条目
+    function processAlbums(elements) {
         const items = [];
-        document.querySelectorAll('li').forEach(li => {
+        const targetElements = elements || document.querySelectorAll('#classify_container > li:not(.cate-0)');
+
+        targetElements.forEach(li => {
+            // 跳过已处理元素，避免重复绑定事件
+            if (li.classList.contains('wn-processed')) return;
             const imgA = li.querySelector('.ImgA');
             if (!imgA) return;
             const id = extractId(imgA.href);
             if (!id) return;
             items.push({ li, imgA, id, title: li.querySelector('.txtA')?.textContent.trim() || '' });
+            li.classList.add('wn-processed');
         });
 
         // 批量查询已读记录，标记页面上已读的漫画
@@ -1013,20 +1017,28 @@
         });
     }
 
+
     // =========================
     // 处理搜索结果页
     // 封面链接在 .ImgA，标题在 .ImgA span
+    // @param {Array<Element>} elements - 指定要处理的元素，不传则处理全部
     // =========================
-
-    function processSearch() {
+    function processSearch(elements) {
         const items = [];
-        document.querySelectorAll('#classify_container li').forEach(li => {
+        const targetElements = elements || document.querySelectorAll('#classify_container>li');
+
+        targetElements.forEach(li => {
+            // 跳过已处理元素，避免重复绑定事件
+            if (li.classList.contains('wn-processed')) return;
             const imgA = li.querySelector('.ImgA');
             if (!imgA) return;
             const id = extractId(imgA.href);
             if (!id) return;
             items.push({ li, imgA, id, title: imgA.querySelector('span')?.textContent.trim() || '' });
+            li.classList.add('wn-processed');
         });
+
+        if (items.length === 0) return;
 
         queryByIds(items.map(it => it.id)).then(results => {
             results.forEach((rec, i) => {
@@ -1047,21 +1059,32 @@
         });
     }
 
+
     // =========================
     // 处理 ranking 排行页
     // 封面在 .itemImg img，标题在 .itemTxt .title
     // 日期插在 .title 后面（外部兄弟节点模式，inside=false）
+    // @param {Array<Element>} elements - 指定要处理的元素，不传则处理全部
     // =========================
 
-    function processRanking() {
+    function processRanking(elements) {
         const items = [];
-        document.querySelectorAll('#topImgCon .itemBox').forEach(box => {
+        const targetElements = elements || document.querySelectorAll('#topImgCon .itemBox');
+
+        targetElements.forEach(box => {
+            // 跳过已处理过的元素，避免重复绑定事件
+            if (box.classList.contains('wn-processed')) return;
+
             const titleA = box.querySelector('.itemTxt .title');
             if (!titleA) return;
             const id = extractId(titleA.href);
             if (!id) return;
             items.push({ box, id, title: titleA.textContent.trim() });
+            // 标记为已处理
+            box.classList.add('wn-processed');
         });
+
+        if (items.length === 0) return;
 
         queryByIds(items.map(it => it.id)).then(results => {
             results.forEach((rec, i) => {
@@ -1083,6 +1106,7 @@
             });
         });
     }
+
 
     // =========================
     // 初始化入口
@@ -1107,13 +1131,59 @@
             createHistUI();
         }
         //<ul class="col_2" id="classify_container">
-        if (document.getElementById('classify_container')) {
-            location.href.includes('/q/') ? processSearch() : processAlbums();
-        }
+        // if (document.getElementById('classify_container')) {
+        //     location.href.includes('/q/') ? processSearch() : processAlbums();
+        // }
 
+        if (document.getElementById('classify_container')) {
+            const isSearch = location.href.includes('/q/');
+            isSearch ? processSearch() : processAlbums();
+
+            // 监听列表容器，动态新增元素自动增量处理
+            const listContainer = document.getElementById('classify_container');
+            if (listContainer) {
+                const observer = new MutationObserver(mutations => {
+                    mutations.forEach(mut => {
+                        const newItems = [];
+                        mut.addedNodes.forEach(node => {
+                            // 只处理新增的 li 元素
+                            if (node.nodeType === 1 && node.tagName === 'LI') {
+                                newItems.push(node);
+                            }
+                        });
+                        if (newItems.length > 0) {
+                            isSearch ? processSearch(newItems) : processAlbums(newItems);
+                        }
+                    });
+                });
+                // 监听直接子节点变化；如果列表有嵌套包裹，可把 subtree 改为 true
+                observer.observe(listContainer, { childList: true, subtree: false });
+            }
+        }
         if (location.href.includes('ranking') && document.querySelector('#topImgCon .itemBox')) {
             processRanking();
+
+            // 监听动态加载的新元素
+            const listContainer = document.querySelector('#topImgCon > .select');
+            if (listContainer) {
+                const observer = new MutationObserver(mutations => {
+                    mutations.forEach(mut => {
+                        const newBoxes = [];
+                        mut.addedNodes.forEach(node => {
+                            if (node.nodeType === 1 && node.classList.contains('itemBox')) {
+                                newBoxes.push(node);
+                            }
+                        });
+                        if (newBoxes.length > 0) {
+                            processRanking(newBoxes);
+                        }
+                    });
+                });
+                observer.observe(listContainer, { childList: true, subtree: false });
+            }
         }
+
+
     }
     init();
 

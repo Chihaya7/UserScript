@@ -1,6 +1,6 @@
 // ==UserScript==
-// @name:zh-CN   Body双向拖拽缩放
-// @name         BodyDragResize
+// @name:zh-CN        Body双向拖拽缩放
+// @name     BodyDragResize
 // @namespace    绅士漫画
 // @icon         https://wnacg.com/favicon.ico
 // @version      1.0.15

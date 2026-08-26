@@ -4,7 +4,7 @@
 // @namespace    绅士漫画
 // @description:zh-CN  仅支持移动端，更新排行搜索页重做排列样式，点击图片直接打开slide阅读页，，点击日期一键复制标题。
 // @description Mobile only. Redesign page layout, open slide reader by clicking covers, copy title by clicking date.
-// @version      2026-08-26 10:29:21
+// @version      2026-08-26 17:58:05
 // @icon         https://wnacg.com/favicon.ico
 // @match        https://*.wnacg.ru/*
 // @match        https://*.wnacg.com/*
@@ -56,7 +56,7 @@
     /* 选中albums,search,推荐页ul.col_3_2页面下的漫画列表外部大容器（ul 标签） */
     #classify_container ,ul.col_3_2{ /* 自动分列 */
         display: grid !important;
-        grid-template-columns: repeat(auto-fit, minmax(min(100%, 370px), 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
         gap: 3px; /* 列间距 */
         white-space: normal !important; /* 强制允许内部文本正常换行，防止内容溢出屏幕宽度 */
 
@@ -141,7 +141,7 @@
     ========================= */
     #topImgCon .select{/* 自动分列 */
         display: grid !important;
-        grid-template-columns: repeat(auto-fit, minmax(min(100%, 370px), 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
         gap: 3px; /* 列间距 */
     }
 
@@ -298,53 +298,136 @@
         });
     }
 
-    // =========================
-    // DOM 完成后执行
-    // =========================
-
     function init() {
+        // =========================
+        // 单元素处理函数（复用原有逻辑，供初始化+增量调用）
+        // =========================
+
+        // 处理单个 albums/search 页 li 条目（完全复用你原逻辑）
+        function processImgBoxLi(li) {
+            // 去重标记，避免重复处理
+            if (li.classList.contains('url-processed')) return;
+            li.classList.add('url-processed');
+
+            // 删除 cate-0
+            if (li.classList.contains("cate-0")) {
+                li.remove();
+                return;
+            }
+            const imgA = li.querySelector("a.ImgA.autoHeight[href]");
+            //Span是search页面包含title的元素，但无法被添加href，也就是不能像ablums那样跳转
+            const txtA = li.querySelector(".txtA") || imgA.querySelector("span");
+            const info = li.querySelector(".info");
+            // txtA 使用 imgA 链接
+            if (imgA && txtA) {
+                txtA.href = imgA.href;
+                txtA.target = "_blank";
+            }
+            // 点击 info 复制 txtA 标题
+            bindCopyClick(info, txtA);
+
+            // 条目内执行 index→slide 替换
+            replaceIndexToSlide(li);
+        }
+
+        // 处理单个 Ranking 页 itemBox 条目（完全复用你原逻辑）
+        function processRankingBox(box) {
+            // 去重标记，避免重复处理
+            if (box.classList.contains('url-processed')) return;
+            box.classList.add('url-processed');
+
+            const title = box.querySelector(".title");
+            const dateItem = box.querySelector(".txtItme .date");
+            if (title) {
+                title.target = "_blank";
+            }
+            // 点击date日期复制标题
+            bindCopyClick(dateItem, title);
+
+            // 条目内执行 index→slide 替换
+            replaceIndexToSlide(box);
+        }
+
+        // index→slide 链接替换（完全复用你原逻辑，支持指定范围）
+        function replaceIndexToSlide(root) {
+            root.querySelectorAll(
+                "a.ImgA[href], .itemImg a[href], .pic_box a[href]"
+            ).forEach((a) => {
+                if (a.classList.contains('link-replaced')) return;
+
+                const indexHref = a.href;
+                if (indexHref.includes("index")) {
+                    // 替换index为slide
+                    const newHref = indexHref.replace(/index/g, "slide");
+                    a.href = newHref;
+                    a.target = "_blank";
+                    a.classList.add('link-replaced');
+
+                    // 点击时请求原index地址,适配网页原生历史记录
+                    a.addEventListener("click", function (e) {
+                        fetch(indexHref, {
+                            method: "HEAD",
+                            credentials: "include"
+                        }).then(res => {
+                            console.log("已请求index页面记录浏览", indexHref, res.status);
+                        }).catch(err => {
+                            console.warn("index head请求失败", err);
+                        });
+                    });
+                }
+            });
+        }
+
         // =========================
         // albums,search页面imgBox 处理
         // 原albums,search页标题文字不含href跳转链接
         //  点击 info 复制 txtA 标题
         // =========================
-
         if (document.querySelector(".imgBox")) {
-            document.querySelectorAll(".imgBox li").forEach((li) => {
-                // 删除 cate-0
-                if (li.classList.contains("cate-0")) {
-                    li.remove();
-                    return;
-                }
-                const imgA = li.querySelector("a.ImgA.autoHeight[href]");
-                //Span是search页面包含title的元素，但无法被添加href，也就是不能像ablums那样跳转
-                const txtA = li.querySelector(".txtA") || imgA.querySelector("span");
-                const info = li.querySelector(".info");
-                // txtA 使用 imgA 链接
-                if (imgA && txtA) {
-                    txtA.href = imgA.href;
-                    txtA.target = "_blank";
-                }
-                // 点击 info 复制 txtA 标题
-                bindCopyClick(info, txtA);
+            // 【原有逻辑】全量处理页面已有条目
+            const initLis = document.querySelectorAll("#classify_container > li");
+
+            // 【新增：兼容自动加载】监听列表容器，新增条目自动处理
+            const listContainer = document.querySelector("#classify_container");
+            const observer = new MutationObserver(mutations => {
+                console.log(`[url脚本] 🔔 监听器触发，共 ${mutations.length} 条 mutation`);
+
+                let newCount = 0;
+                mutations.forEach(mut => {
+                    mut.addedNodes.forEach(node => {
+                        if (node.nodeType === 1 && node.tagName === 'LI') {
+                            processImgBoxLi(node);
+                            newCount++;
+                        }
+                    });
+                });
+                console.log(`[url脚本] 本次新增处理 ${newCount} 个 li`);
             });
+            observer.observe(listContainer, { childList: true, subtree: false });
         }
 
         // =========================
         // Ranking页topImgCon 处理
         //  点击date日期复制标题
         // =========================
-
         else if (document.getElementById("topImgCon")) {
-            document.querySelectorAll("#topImgCon .itemBox").forEach((box) => {
-                const title = box.querySelector(".title");
-                const dateItem = box.querySelector(".txtItme .date");
-                if (title) {
-                    title.target = "_blank";
-                }
-                // 点击date日期复制标题
-                bindCopyClick(dateItem, title);
-            });
+            // 【原有逻辑】全量处理页面已有条目
+            document.querySelectorAll("#topImgCon .itemBox").forEach(processRankingBox);
+
+            // 【新增：兼容自动加载】监听列表容器，新增条目自动处理
+            const listContainer = document.querySelector("#topImgCon > .select");
+            if (listContainer) {
+                const observer = new MutationObserver(mutations => {
+                    mutations.forEach(mut => {
+                        mut.addedNodes.forEach(node => {
+                            if (node.nodeType === 1 && node.classList.contains('itemBox')) {
+                                processRankingBox(node);
+                            }
+                        });
+                    });
+                });
+                observer.observe(listContainer, { childList: true, subtree: false });
+            }
         }
 
         // =========================
@@ -353,38 +436,19 @@
         // 电脑版页面 .pic_box a[href]
         // href index → slide
         // =========================
-
-        document.querySelectorAll(
-            "a.ImgA[href], .itemImg a[href], .pic_box a[href]"
-        ).forEach((a) => {
-            const indexHref = a.href;
-            if (indexHref.includes("index")) {
-                // 替换index为slide
-                const newHref = indexHref.replace(/index/g, "slide");
-                a.href = newHref;
-                a.target = "_blank";
-                // 点击时请求原index地址,适配网页原生历史记录
-                a.addEventListener("click", function (e) {
-                    fetch(indexHref, {
-                        method: "HEAD",
-                        credentials: "include"
-                    }).then(res => {
-                        console.log("已请求index页面记录浏览", indexHref, res.status);
-                    }).catch(err => {
-                        console.warn("index head请求失败", err);
-                    });
-                });
-            }
-        });
+        // 【原有逻辑】全量处理页面已有链接
+        replaceIndexToSlide(document.body);
     }
 
     // =========================
     // 等待 DOM
     // =========================
-
     if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", init);
     } else {
         init();
     }
+
+
+
 })();
