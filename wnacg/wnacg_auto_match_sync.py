@@ -9,7 +9,9 @@ SOURCE_URL = "https://wn01.link/"
 # 需要更新的多个脚本文件
 SCRIPT_FILES = [
     "wnacg Layout Redesign Mobile.user.js",
-    "wnacg Reading history GIST backup.user.js"
+    "wnacg Reading history GIST backup.user.js",
+    "wnacg AutoPager.user.js",
+    "BodyDragResize.user.js" 
 ]
 
 def fetch_latest_urls():
