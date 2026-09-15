@@ -4,7 +4,7 @@
 // @namespace    绅士漫画
 // @description:zh-CN  仅支持移动端，更新排行搜索页重做排列样式，点击图片直接打开slide阅读页，，点击日期一键复制标题。
 // @description Mobile only. Redesign page layout, open slide reader by clicking covers, copy title by clicking date.
-// @version      2026-09-05 01:58:15
+// @version      2026年9月15日 07:59:50
 // @icon         https://wnacg.com/favicon.ico
 // @match        https://*.wnacg.ru/*
 // @match        https://*.wnacg.com/*
@@ -301,11 +301,9 @@
     }
 
     function init() {
-        // =========================
-        // 单元素处理函数（复用原有逻辑，供初始化+增量调用）
-        // =========================
-
-        // 处理单个 albums/search 页 li 条目（完全复用你原逻辑）
+        // 处理单个 albums/search 页 li 条目
+        // 原albums,search页标题文字不含href跳转链接
+        //  点击 info 复制 txtA 标题
         function processImgBoxLi(li) {
             // 去重标记，避免重复处理
             if (li.classList.contains('url-processed')) return;
@@ -333,7 +331,8 @@
             return true;
         }
 
-        // 处理单个 Ranking 页 itemBox 条目（完全复用你原逻辑）
+        // 处理单个 Ranking 页 itemBox 条目
+        //  点击date日期复制标题
         function processRankingBox(box) {
             // 去重标记，避免重复处理
             if (box.classList.contains('url-processed')) return;
@@ -351,7 +350,12 @@
             replaceIndexToSlide(box);
         }
 
-        // index→slide 链接替换（完全复用你原逻辑，支持指定范围）
+        // =========================
+        // albums，search页面，推荐页 a.ImgA[href]
+        // Ranking页面 .itemImg a[href]
+        // 电脑版页面 .pic_box a[href]
+        // href index → slide
+        // =========================
         function replaceIndexToSlide(root) {
             root.querySelectorAll(
                 "a.ImgA[href], .itemImg a[href], .pic_box a[href]"
@@ -383,8 +387,6 @@
 
         // =========================
         // albums,search页面imgBox 处理
-        // 原albums,search页标题文字不含href跳转链接
-        //  点击 info 复制 txtA 标题
         // =========================
         if (document.querySelector(".imgBox")) {
             // 【初始化全量处理】扫描当前页面已有的全部 li
@@ -417,7 +419,6 @@
 
         // =========================
         // Ranking页topImgCon 处理
-        //  点击date日期复制标题
         // =========================
         else if (document.getElementById("topImgCon")) {
             // 【原有逻辑】全量处理页面已有条目
@@ -438,15 +439,77 @@
                 observer.observe(listContainer, { childList: true, subtree: false });
             }
         }
-
-        // =========================
-        // albums，search页面，推荐页 a.ImgA[href]
-        // Ranking页面 .itemImg a[href]
-        // 电脑版页面 .pic_box a[href]
-        // href index → slide
-        // =========================
-        // 【原有逻辑】全量处理页面已有链接
+        // 全量处理页面已有链接
         replaceIndexToSlide(document.body);
+
+        /**
+         * 清洗 comicName 文本
+         * 以第一个 ] 为界；之后再遇 ( 或 [ 即截断；括号符号全替换为空格
+         */
+        function cleanComicName(raw) {
+            let s = (raw || '').trim();
+            const firstClose = s.indexOf(']');
+            if (firstClose === -1) return s;
+            let cut = s.slice(0, firstClose + 1);
+            const rest = s.slice(firstClose + 1);
+            const m = rest.match(/[(\[（［【]/);
+            cut += m ? rest.slice(0, m.index) : rest;
+            cut = cut.replace(/[\[\]()（）［］【】]/g, ' ');
+            return cut.replace(/\s+/g, ' ').trim();
+        }
+
+        function showComicLink() {
+            const src = document.getElementById('comicName');
+            if (!src) {
+                console.warn('[comicName] 未找到 id="comicName" 的元素');
+                return;
+            }
+            //广告div
+            document.querySelectorAll('div.dv-section:has(> div > a[target="_blank"] > img)')
+                .forEach(sec => sec.remove());
+
+            const result = cleanComicName(src.textContent.trim());
+            console.log('[comicName] 结果：', result);
+
+            const box = document.querySelector('div.sub_r');
+            if (!box) {
+                console.warn('[comicName] 未找到 div.sub_r');
+                return;
+            }
+
+            const out = document.createElement('div');
+            out.setAttribute('style',
+                'font-size: 14px; line-height: 20px; color: #fff; ' +
+                'display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; ' +
+                'overflow: hidden; text-overflow: ellipsis; margin-bottom: 6px; ' +
+                'font-weight: bold; word-break: break-all;'
+            );
+
+            const link = document.createElement('a');
+            link.href = 'https://exhentai.org/?f_search=' + encodeURIComponent(result);
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = result;
+            link.title = '在exhentai中搜索';
+            link.style.color = 'inherit';
+            link.style.textDecoration = 'none';
+
+            // 选中一段文字后点击 → 只搜索选中内容；未选中 → 搜索完整结果
+            let selectedText = '';
+            link.addEventListener('mousedown', function () {
+                selectedText = (window.getSelection() || '').toString().trim();
+            });
+            link.addEventListener('click', function (e) {
+                if (selectedText) {
+                    e.preventDefault();
+                    window.open('https://exhentai.org/?f_search=' + encodeURIComponent(selectedText), '_blank', 'noopener');
+                }
+            });
+
+            out.appendChild(link);
+            box.appendChild(out);
+        }
+        showComicLink();
     }
 
     // =========================
