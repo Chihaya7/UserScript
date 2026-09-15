@@ -2,13 +2,13 @@
 // @name               wnacg Viewer
 // @name:zh-CN         wnacg Viewer
 // @namespace          绅士漫画
-// @version            4.15.4
-// @author             
-// @description        基于Comic Looms 4.15.3去除多站点适配与多语言的精简
+// @version            4.16.4
+// @author
+// @description        增加图片换源
 // @description:en     Manga Viewer + Downloader, Focus on experience and low load on the site. Support you in finding the site you are searching for.
 // @description:zh-CN  漫画阅读 + 下载器，注重体验和对站点的负载控制。支持你正在搜索的站点。
 // @license            MIT
-// @supportURL         
+// @supportURL
 // @match              *://*/*
 // @require            https://cdn.jsdelivr.net/npm/@zip.js/zip.js@2.8.23/dist/zip.min.js
 // @require            https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js
@@ -147,6 +147,8 @@
         pixivUgoiraModeTooltip: ["如何处理Pixiv的Ugoira<br>  模式Ugoira: 处理速度快且占用低，可快速开始播放，但下载后将保存每一帧图片到文件夹，同时提供一个一键转换脚本，将图片序列转换为GIF。<br>  模式GIF和MP4：将使用ffmpeg.wasm直接将ugoira转换为可直接播放的格式，但转换速度慢占用高。"],
         readMode: ["阅读模式"],
         gridMode: ["缩略图模式"],
+        wnSwitchMode: ["切换线路时换源范围"],
+        wnSwitchModeTooltip: ["全部图片：切换线路后所有图片都按新线路重新下载。<br>仅未加载图片：已加载完成的图片保留旧线路数据，仅尚未下载的图片按新线路加载。"],
         readModeTooltip: ["滚动时切换到下一张图片，否则连续阅读"],
         stickyMouse: ["黏糊糊鼠标"],
         stickyMouseTooltip: ["非连续阅读模式下，通过鼠标移动来自动滚动单张图片。"],
@@ -431,6 +433,7 @@
             filenameOrder: "auto",
             dragImageOut: false,
             excludeVideo: false,
+            wnSwitchMode: "all",
             enableFilter: false,
             filterTags: [],
             imgNodeActions: [],
@@ -848,6 +851,22 @@
                     display: "Alphabetically"
                 }
             ]
+        },
+        {
+            key: "wnSwitchMode",
+            typ: "select",
+            gridColumnRange: [1, 11],
+            options: [
+                {
+                    value: "all",
+                    display: "全部图片"
+                },
+                {
+                    value: "pending",
+                    display: "仅未加载图片"
+                }
+            ],
+            displayInSite: /wn\d{2}\.(cc|ru|shop)|wnacg\.com/
         }
     ];
     var Adapter = class {
@@ -1023,7 +1042,7 @@
         create() {
             this.root = DEFAULT_NODE_TEMPLATE.cloneNode(true);
             const anchor = this.root.firstElementChild;
-            anchor.href = this.href;
+            anchor.href = this._wnOrigUrl ? wnApplyImageLine(this._wnOrigUrl) : this.href;
             anchor.target = "_blank";
             this.imgElement = anchor.firstElementChild;
             this.canvasElement = anchor.lastElementChild;
@@ -1798,6 +1817,20 @@
         }
     };
     var wnacg_exports = __exportAll({});
+    // ===== WNACG 图片线路（换源） v4.16.0 =====
+    var WN_LINE_OPTS = ["默认", "高速1", "高速2"];
+    var WN_LINE_TARGET = ["", "img5.wnimg1.ru", "img5.qy0.ru"];
+    var wnImageLine = parseInt((typeof _GM_getValue === "function" ? _GM_getValue("wnacg_image_line", "0") : "0") ?? "0", 10);
+    if (!(wnImageLine >= 0 && wnImageLine < WN_LINE_OPTS.length)) wnImageLine = 0;
+    function wnApplyImageLine(url) {
+        if (!url || !wnImageLine) return url;
+        var target = WN_LINE_TARGET[wnImageLine];
+        if (!target) return url;
+        // 任意 imgN.wnimg2.cfd 统一替换为目标线路域名，协议与路径/参数原样保留
+        return url.replace(/(https?:\/\/|\/\/)img\d+\.wnimg2\.cfd(?=\/)/, function (m, p1) {
+            return p1 + target;
+        });
+    }
     var WnacgMatcher = class extends BaseMatcher {
         meta;
         baseURL;
@@ -1818,12 +1851,15 @@
             for (let index = 0; index < list.length; index++) {
                 const img = list[index];
                 let imgNode = new ImageNode("", img.url, img.caption, void 0, img.url);
+                imgNode._wnOrigUrl = img.url; // 记住原始图床地址，换源时始终以此为准
                 result.push(imgNode);
             }
             return result;
         }
         async fetchOriginMeta(node) {
-            const url = node.originSrc ?? node.thumbnailSrc;
+            const origUrl = node._wnOrigUrl || node.originSrc || node.thumbnailSrc;
+            const url = wnApplyImageLine(origUrl);
+            console.log("[WNACG] 实际请求下载: " + url);
             const ext = url.includes(".") ? url.split(".").pop() : "jpg";
             return {
                 url,
@@ -1860,7 +1896,9 @@
                     js += line;
                 }
             }
-            return this.extractUrlsAndCaptions(js);
+            const list = this.extractUrlsAndCaptions(js);
+            console.log("[WNACG] img list 原始网址（共 " + list.length + " 张）", list);
+            return list;
         }
         extractUrlsAndCaptions(inputStr) {
             const regex = /url:\s*"(.*?)",\s*caption:\s*"(.*?)"/gs;
@@ -5873,11 +5911,11 @@ return {data};
         noticeableBTN() {
             if (!this.btn.classList.contains("lightgreen")) {
                 this.btn.classList.add("lightgreen");
-                if (!/?/.test(this.btn.textContent)) this.btn.textContent += "?";
+                if (!/✓/.test(this.btn.textContent)) this.btn.textContent += "✓";
             }
         }
         normalizeBTN() {
-            this.btn.textContent = this.btn.textContent.replace("?", "");
+            this.btn.textContent = this.btn.textContent.replace("✓", "");
             this.btn.classList.remove("lightgreen");
         }
         createChapterSelectList(chapters, selectedChapters) {
@@ -6461,6 +6499,7 @@ return {data};
     </div>
     <div id="b-main" class="b-main">
         <a id="entry-btn" class="b-main-item clickable" data-display-texts="${dt.entry},${dt.collapse}">${dt.entry}</a>
+        <a id="wn-line-btn" class="b-main-item clickable" title="切换图片线路（换源）">线路: 默认</a>
         <div id="page-status" class="b-main-item" hidden>
             <a class="clickable" id="p-curr-page" style="color:#ffc005;">1</a><span id="p-slash-1">/</span><span id="p-total">0</span>
         </div>
@@ -6524,6 +6563,7 @@ return {data};
             chaptersPanelBTN: q("#chapters-panel-btn", root),
             filterPanelBTN: q("#filter-panel-btn", root),
             entryBTN: q("#entry-btn", root),
+            lineBtn: q("#wn-line-btn", root),
             currPageElement: q("#p-curr-page", root),
             totalPageElement: q("#p-total", root),
             finishedElement: q("#p-finished", root),
@@ -6780,6 +6820,7 @@ return {data};
                         "downloader-panel-btn",
                         "chapters-panel-btn",
                         "filter-panel-btn",
+                        "wn-line-btn",
                         "entry-btn"
                     ];
                     case 2: return [
@@ -6789,6 +6830,7 @@ return {data};
                         "config-panel-btn",
                         "downloader-panel-btn",
                         "chapters-panel-btn",
+                        "wn-line-btn",
                         "entry-btn",
                         "read-mode-bar",
                         "pagination-adjust-bar",
@@ -8590,6 +8632,54 @@ pause`];
         const events = initEvents(HTML, BIFM, FVGM, IFQ, IL, PH);
         addEventListeners(events, HTML, BIFM, DL, PH);
         new ContextMenu(HTML, FVGM, events.appEvents);
+        // ===== WNACG 图片线路切换（换源） v4.16.0 =====
+        function wnRefreshLineBtn() {
+            if (HTML.lineBtn) HTML.lineBtn.textContent = "线路: " + WN_LINE_OPTS[wnImageLine];
+        }
+        wnRefreshLineBtn();
+        if (HTML.lineBtn) HTML.lineBtn.addEventListener("click", () => {
+            wnImageLine = (wnImageLine + 1) % WN_LINE_OPTS.length;
+            try { typeof _GM_setValue === "function" && _GM_setValue("wnacg_image_line", String(wnImageLine)); } catch (e) { }
+            wnRefreshLineBtn();
+            // 中止空闲预加载；按配置决定是否重置已加载完成的图片
+            var switchMode = ADAPTER.conf.wnSwitchMode || "all";
+            IL.abort();
+            IFQ.forEach((imf) => {
+                // 仅未加载模式：已完成的图片保留旧线路数据，不重新下载
+                if (switchMode === "pending" && imf.stage === FetchState.DONE) return;
+                imf.abort();
+                imf.lock = false; // 清掉锁，避免 start() 因 lock 仍为 true 而跳过刚被中断的图
+                imf.stage = FetchState.URL;
+                imf.rendered = false;
+                imf.data = void 0;
+                imf.contentType = void 0;
+                imf.failedReason = void 0;
+                imf.unrender();
+                imf.node.changeStyle("init");
+                // 同步更新缩略图 <a> 的 href，使拖拽/新标签页打开为换源后地址
+                var thumbAnchor = imf.node.root?.querySelector("a");
+                if (thumbAnchor) thumbAnchor.href = wnApplyImageLine(imf.node._wnOrigUrl || imf.node.href);
+            });
+            if (switchMode !== "pending") IFQ.finishedIndex.clear();
+            // 从当前浏览位置开始排空闲预加载，保证正在看的页优先重新加载
+            var idleThreads = ADAPTER.conf.maxIdleThreads;
+            var startFrom = Math.max(0, IFQ.currIndex || 0);
+            IL.processingIndexList = [];
+            for (var i = 0; i < IFQ.length && IL.processingIndexList.length < idleThreads; i++) {
+                var idx = (startFrom + i) % IFQ.length;
+                if (IFQ[idx].stage === FetchState.URL) IL.processingIndexList.push(idx);
+            }
+            IL.start();
+            // 让当前页立即重新走抓取流程（BIFM 监听 imf-on-finished，加载完成后自动替换大图）
+            try { EBUS.emit("ifq-do", IFQ.currIndex, IFQ[IFQ.currIndex], "next"); } catch (e) { }
+            try {
+                if (BIFM.visible) {
+                    var imfNow = IFQ[BIFM.getPageNumber()];
+                    if (imfNow) BIFM.show(imfNow);
+                }
+            } catch (e) { }
+            showMessage(HTML.messageBox, "info", "已切换图片线路: " + WN_LINE_OPTS[wnImageLine], 2000);
+        });
         EBUS.subscribe("downloader-canvas-on-click", (index) => {
             IFQ.currIndex = index;
             if (IFQ.chapterIndex !== BIFM.chapterIndex) return;
