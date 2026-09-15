@@ -2,9 +2,9 @@
 // @name               wnacg Viewer
 // @name:zh-CN         wnacg Viewer
 // @namespace          绅士漫画
-// @version            4.17.0
+// @version            4.17.3
 // @author
-// @description        缩略图列数设置外置
+// @description        更改缩略图列数，图片分辨率重新采样，未优化，卡顿明显
 // @description:en     Manga Viewer + Downloader, Focus on experience and low load on the site. Support you in finding the site you are searching for.
 // @description:zh-CN  漫画阅读 + 下载器，注重体验和对站点的负载控制。支持你正在搜索的站点。
 // @license            MIT
@@ -1108,7 +1108,6 @@
             if (!this.root || !this.imgElement || !this.canvasElement) return onfailed("undefined elements");
             if (!this.imgElement.src || this.imgElement.src === "data:image/gif;base64,R0lGODlhAQABAIAAAMLCwgAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==") return onfailed("empty or default src");
             if (this.root.offsetWidth <= 1) return onfailed("element too small");
-            if (this.imgElement.src === this.imgElement.getAttribute("data-rendered")) return;
             this.imgElement.onload = null;
             this.imgElement.onerror = null;
             const oldRatio = Math.max(ADAPTER.conf.minRatio, this.ratio());
@@ -1117,19 +1116,21 @@
                 h: this.imgElement.naturalHeight
             };
             const newRatio = Math.max(ADAPTER.conf.minRatio, this.ratio());
-            const flowVision = this.root.parentElement?.classList.contains("fvg-sub-container");
             if (Math.abs(newRatio - oldRatio) > .07) {
                 this.root.style.aspectRatio = newRatio.toString();
                 this.root.setAttribute("data-ratio", newRatio.toString());
-                if (flowVision) {
-                    this.canvasElement.height = this.root.offsetHeight;
-                    this.canvasElement.width = Math.floor(this.root.offsetHeight / newRatio);
-                } else {
-                    this.canvasElement.width = this.root.offsetWidth;
-                    this.canvasElement.height = Math.floor(this.root.offsetWidth * newRatio);
-                }
                 onResize();
             }
+            // 画布内部分辨率必须等于画布实际显示尺寸（布局稳定后的 clientWidth/clientHeight），
+            // 否则画布会被 CSS 拉伸放大：列数减少、格子变大时，若画布内部分辨率不随之增长，
+            // 就会被拉伸到更大尺寸显示，缩略图变大却仍然模糊。
+            // 在 aspectRatio 更新之后再读取，保证高度与格子的真实显示尺寸一致；列数变化后
+            // clientWidth/clientHeight 变化 → 触发重采样 → 清晰。
+            const targetWidth = Math.max(1, Math.floor(this.canvasElement.clientWidth || this.root.offsetWidth));
+            const targetHeight = Math.max(1, Math.floor(this.canvasElement.clientHeight || this.root.offsetHeight));
+            if (this.imgElement.src === this.imgElement.getAttribute("data-rendered") && this.canvasElement.width === targetWidth && this.canvasElement.height === targetHeight) return;
+            this.canvasElement.width = targetWidth;
+            this.canvasElement.height = targetHeight;
             const resized = (src) => {
                 this.imgElement.src = "";
                 this.imgElement.setAttribute("data-rendered", src);
@@ -4358,9 +4359,19 @@ return {data};
                 if (ADAPTER.conf.gridMode === "flow") this.layout = new FlowVisionLayout(this.root);
                 else this.layout = new GRIDLayout(this.root, HTML.styleSheet);
                 this.layout.resize(this.queue);
+                this.renderCurrView();
             });
-            EBUS.subscribe("fvg-layout-resize", () => this.layout.resize(this.queue));
+            EBUS.subscribe("fvg-layout-resize", () => {
+                this.layout.resize(this.queue);
+                this.renderCurrView();
+            });
             EBUS.subscribe("imf-resize", (imf) => this.resizedNodes(imf));
+            // 窗口尺寸变化会改变缩略图的实际显示尺寸，重新排布并重渲染可见缩略图，使画布按新尺寸重新采样
+            window.addEventListener("resize", () => this.debouncer.addEvent("FULL-VIEW-RESIZE-EVENT", () => {
+                if (HTML.root.classList.contains("ehvp-root-collapse")) return;
+                this.layout.resize(this.queue);
+                this.renderCurrView();
+            }, 300));
         }
         resizedNodes(imf) {
             const node = imf.node;
@@ -4402,7 +4413,7 @@ return {data};
             const [se, ee] = this.layout.visibleRange(this.root, this.queue.map((e) => e.element));
             let [start, end] = [parseInt(se.getAttribute("data-index") ?? "-1"), parseInt(ee.getAttribute("data-index") ?? "-1")];
             if (start > -1) {
-                this.queue.slice(start, end + 1).forEach((e) => e.node.render());
+                this.queue.slice(start, end + 1).forEach((e) => e.node.render(true));
                 evLog("info", "render curr view, range: ", `[${start}-${end}]`);
             } else evLog("error", "render curr view error, range: ", `[${start}-${end}]`);
         }
