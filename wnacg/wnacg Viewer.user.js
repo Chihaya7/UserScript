@@ -2,9 +2,9 @@
 // @name               wnacg Viewer
 // @name:zh-CN         wnacg Viewer
 // @namespace          绅士漫画
-// @version            4.16.4
+// @version            4.17.0
 // @author
-// @description        增加图片换源
+// @description        缩略图列数设置外置
 // @description:en     Manga Viewer + Downloader, Focus on experience and low load on the site. Support you in finding the site you are searching for.
 // @description:zh-CN  漫画阅读 + 下载器，注重体验和对站点的负载控制。支持你正在搜索的站点。
 // @license            MIT
@@ -18,6 +18,7 @@
 // @grant              GM_getValue
 // @grant              GM_setValue
 // ==/UserScript==
+
 
 (function (pica, _zip_js_zip_js, file_saver) {
     "use strict";
@@ -6500,6 +6501,14 @@ return {data};
     <div id="b-main" class="b-main">
         <a id="entry-btn" class="b-main-item clickable" data-display-texts="${dt.entry},${dt.collapse}">${dt.entry}</a>
         <a id="wn-line-btn" class="b-main-item clickable" title="切换图片线路（换源）">线路: 默认</a>
+        <div id="colcount-bar" class="b-main-item">
+            <span>
+              <span title="每行数量">列</span>
+              <a id="colcountMinusBTN" class="b-main-btn clickable" type="button">-</a>
+              <span id="colcountInput" class="b-main-input">${ADAPTER.conf.colCount}</span>
+              <a id="colcountAddBTN" class="b-main-btn clickable" type="button">+</a>
+            </span>
+        </div>
         <div id="page-status" class="b-main-item" hidden>
             <a class="clickable" id="p-curr-page" style="color:#ffc005;">1</a><span id="p-slash-1">/</span><span id="p-total">0</span>
         </div>
@@ -6564,6 +6573,8 @@ return {data};
             filterPanelBTN: q("#filter-panel-btn", root),
             entryBTN: q("#entry-btn", root),
             lineBtn: q("#wn-line-btn", root),
+            colcountBar: q("#colcount-bar", root),
+            colcountInput: q("#colcountInput", root),
             currPageElement: q("#p-curr-page", root),
             totalPageElement: q("#p-total", root),
             finishedElement: q("#p-finished", root),
@@ -6821,6 +6832,7 @@ return {data};
                         "chapters-panel-btn",
                         "filter-panel-btn",
                         "wn-line-btn",
+                        "colcount-bar",
                         "entry-btn"
                     ];
                     case 2: return [
@@ -8637,6 +8649,16 @@ pause`];
             if (HTML.lineBtn) HTML.lineBtn.textContent = "线路: " + WN_LINE_OPTS[wnImageLine];
         }
         wnRefreshLineBtn();
+        // ===== 缩略图每行数量快捷切换（- 数字 +）=====
+        function wnRefreshColCountBtn() {
+            if (HTML.colcountInput) HTML.colcountInput.textContent = ADAPTER.conf.colCount;
+        }
+        wnRefreshColCountBtn();
+        EBUS.subscribe("fvg-layout-resize", wnRefreshColCountBtn);
+        if (HTML.colcountBar) {
+            HTML.colcountBar.querySelector("#colcountMinusBTN")?.addEventListener("click", () => events.modNumberConfigEvent("colCount", "minus"));
+            HTML.colcountBar.querySelector("#colcountAddBTN")?.addEventListener("click", () => events.modNumberConfigEvent("colCount", "add"));
+        }
         if (HTML.lineBtn) HTML.lineBtn.addEventListener("click", () => {
             wnImageLine = (wnImageLine + 1) % WN_LINE_OPTS.length;
             try { typeof _GM_setValue === "function" && _GM_setValue("wnacg_image_line", String(wnImageLine)); } catch (e) { }
