@@ -2,7 +2,7 @@
 // @name         EH Viewer Rebuild
 // @name:zh-CN   EH站阅读器重构版
 // @namespace    https://github.com/local/ehviewer-rebuild
-// @version      1.6.6
+// @version      1.6.7
 // @author       Rebuild from Comic Looms
 // @description  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
 // @description:zh-CN  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
@@ -20,7 +20,7 @@
 //1.6.4 refactor:EH Viewer缩略图显示重构 从拆分雪碧图到Css控制
 //1.6.5 feature:实现autoLoad（自动加载） autoLoadInBackground（后台保持加载）设置功能
 //1.6.6 fix:重新设计大图界面autoLoad表现
-
+//1.6.7 fix:超时重试重新提取nl链接 url累积
 (function () {
     "use strict";
 
@@ -1155,7 +1155,9 @@
          * 1. 请求详情页HTML
          * 2. 如果开启 fetchOriginal，尝试匹配原图下载链接（/fullimg 路径，备选 id="i7"）
          * 3. 否则匹配压缩图链接（#img 的 src）
-         * 4. 如果获取失败且 retry=true，从 loadfail 链接的 onclick 中提取 nl 值后重试
+         * 4. 如果获取失败且 retry=true，从 loadfail 链接的 onclick 中提取 nl 值并累积到 href 后重试
+         *    多次重试会多次调用本函数：每次从最新响应提取新的 nl 值追加到 href（?nl=a&nl=b...），
+         *    等价于手动连续点击 loadfail 刷新，循环次数由调用方的 maxRetries 控制
          * 5. 检测 509 配额超限错误
          * 6. 修正文件扩展名
          *
@@ -1199,8 +1201,10 @@
                 if (normalMatch) src = normalMatch[1];
             }
 
-            // nl 重试机制：retry=true 时，从页面提取 nl 值后重新请求
+            // nl 重试机制：retry=true 时，从页面提取 nl 值并累积到 href 后重新请求
             // 原脚本方式：nl值在 id="loadfail" 的a标签的onclick中，格式为 nl('...')
+            // node.href 为持久状态：多次重试会在此前 nl 参数（?nl=a）基础上用 & 继续追加（?nl=a&nl=b），
+            // 与手动连续点击 loadfail 时浏览器地址栏的累积效果一致
             if (retry) {
                 let nlMatch = REGEX.nlValue.exec(text);
                 // 备选：从任意 nl() 函数调用中提取
@@ -1475,14 +1479,15 @@
                     this.retryCount++;
                     log("info", `Retrying image ${this.index} (${this.retryCount}/${this.maxRetries})...`);
                     await sleep(1000 * this.retryCount); // 指数退避
-                    // 重置状态以便重新获取
-                    if (this.retryCount === 1) {
-                        // 第一次重试尝试用 nl 机制
-                        try {
-                            const meta = await this.matcher.fetchOriginMeta(this.node, true);
-                            this.node.originSrc = meta.url;
-                            this.state = FetchState.URL;
-                        } catch (e2) { /* ignore */ }
+                    // 每次重试都用 nl 机制：从最新响应提取新的 nl 值并累积到 node.href
+                    // （?nl=a&nl=b...），等价于手动连续点击 loadfail 刷新；
+                    // 循环次数由 maxRetries 控制，无需单独设置追加上限
+                    try {
+                        const meta = await this.matcher.fetchOriginMeta(this.node, true);
+                        this.node.originSrc = meta.url;
+                        this.state = FetchState.URL;
+                    } catch (e2) {
+                        // 本轮 nl 未取到图（可能页面无 loadfail 或递归请求仍失败），继续下一轮重试
                     }
                     return this._loadInternal();
                 }
