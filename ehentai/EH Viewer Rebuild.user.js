@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         EH Viewer Rebuild
 // @name:zh-CN   EH站阅读器重构版
-// @namespace    https://github.com/local/ehviewer-rebuild
-// @version      1.6.8
+// @namespace    ehentai
+// @version      1.6.10
 // @author       Rebuild from Comic Looms
 // @description  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
 // @description:zh-CN  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
@@ -22,6 +22,13 @@
 //1.6.6 fix:重新设计大图界面autoLoad表现
 //1.6.7 fix:超时重试重新提取nl链接 url累积
 //1.6.8 feat:autoExpandAllPages自动加载全部缩略图页
+//1.6.10 fix:_loadAll()先进先出加载队列改为open()高优先级插队
+//待解决bug
+//Retry with nl value:  不知道是哪个图片触发的
+//在大图模式下，大图替换缩略图失效，必须出现滚动鼠标之类的操作它才会又正常替换
+//大图模式 横向翻页进入的大图页码不对
+//雪碧图加载迟缓时出现划分缩略图位置不对情况
+//自动加载队列及优先级实现方式有些复杂，感觉可以重构
 (function () {
     "use strict";
 
@@ -34,10 +41,10 @@
      * 仿照原脚本 regulars 对象的设计
      */
     const REGEX = {
-        // 画廊页URL匹配：https://exhentai.org/g/{gid}/{token}/ （含 wn09.shop / wn08.ru 镜像域名）
-        workURL: /^https?:\/\/(exhentai\.org|e-hentai\.org|[\w.-]*wn09\.shop|[\w.-]*wn08\.ru)\/g\/\d+\/[\w-]+\/?/,
-        // 图片详情页URL匹配：https://exhentai.org/s/{hash}/{gid}-{pagenum} （含 wn09.shop / wn08.ru 镜像域名）
-        pageURL: /^https?:\/\/(exhentai\.org|e-hentai\.org|[\w.-]*wn09\.shop|[\w.-]*wn08\.ru)\/s\/[\w-]+\/\d+-\d+/,
+        // 画廊页URL匹配：https://exhentai.org/g/{gid}/{token}/ （含 wn09.shop 镜像域名）
+        workURL: /^https?:\/\/(exhentai\.org|e-hentai\.org)\/g\/\d+\/[\w-]+\/?/,
+        // 图片详情页URL匹配：https://exhentai.org/s/{hash}/{gid}-{pagenum} （含 wn09.shop 镜像域名）
+        pageURL: /^https?:\/\/(exhentai\.org|e-hentai\.org)\/s\/[\w-]+\/\d+-\d+/,
         // 从CSS background样式中提取雪碧图URL：url("...") 或 url('...') 或 url(...)
         // 注意：原脚本用 /url\((.*?)\)/ 不处理引号，提取后需手动去掉引号
         sprite: /url\(["']?(.*?)["']?\)/,
@@ -296,16 +303,35 @@
 
         /**
          * 获取一个下载许可（如果达到上限则等待）
-         * @returns {Promise<void>}
+         * 返回 { promise, waiter }：waiter 是等待队列中的句柄，
+         * 可通过 promote(waiter) 提升该任务的优先级（插队到队首）
+         * @returns {{promise: Promise<void>, waiter: object|null}}
          */
-        async acquire() {
+        acquire() {
             if (this.current < this.maxConcurrent) {
                 this.current++;
-                return;
+                return { promise: Promise.resolve(), waiter: null };
             }
-            return new Promise(resolve => {
-                this.queue.push(resolve);
+            let waiter;
+            const promise = new Promise(resolve => {
+                waiter = { resolve };
+                this.queue.push(waiter);
             });
+            return { promise, waiter };
+        }
+
+        /**
+         * 提升某个等待任务的优先级：将其移动到等待队列最前
+         * 用于用户点击/跳转/滚动到的图片，让它们优先获得下载许可
+         * @param {object|null} waiter - acquire() 返回的等待句柄
+         */
+        promote(waiter) {
+            if (!waiter) return;
+            const idx = this.queue.indexOf(waiter);
+            if (idx > 0) {
+                this.queue.splice(idx, 1);
+                this.queue.unshift(waiter);
+            }
         }
 
         /**
@@ -322,8 +348,8 @@
         _pump() {
             while (this.queue.length > 0 && this.current < this.maxConcurrent) {
                 this.current++;
-                const resolve = this.queue.shift();
-                resolve();
+                const waiter = this.queue.shift();
+                waiter.resolve();
             }
         }
 
@@ -1395,6 +1421,8 @@
             this.error = undefined;
             /** @type {Function[]} 加载完成回调 */
             this._onLoadCallbacks = [];
+            /** @type {object|null} 下载信号量等待句柄（排队中），用于提升优先级插队 */
+            this._semWaiter = null;
         }
 
         /**
@@ -1412,36 +1440,59 @@
         }
 
         /**
+         * 提升该图片的下载优先级（插队到信号量等待队列最前）
+         * 用户点击/跳转/滚动到的图片调用，让其优先于全量加载队列获得许可
+         */
+        promote() {
+            if (this.semaphore && this._semWaiter) {
+                this.semaphore.promote(this._semWaiter);
+            }
+        }
+
+        /**
          * 加载图片（完整流程：获取URL -> 下载数据 -> 创建blob）
          * 通过 DownloadSemaphore 控制并发，避免所有图片同时下载
+         * @param {boolean} [highPriority=false] - 高优先级：排队中则插队到队首
          * @returns {Promise<boolean>} 是否成功
          */
-        async load() {
-            if (this.loading) return this._loadingPromise;
+        async load(highPriority = false) {
+            if (this.loading) {
+                // 已在加载/排队中：高优先级请求直接插队
+                if (highPriority) this.promote();
+                return this._loadingPromise;
+            }
             if (this.state === FetchState.DONE) return true;
 
             this.loading = true;
             this.error = undefined;
             log("info", `[load] #${this.index} 开始加载图片 (当前状态 state=${this.state})`);
 
-            // 获取下载许可（并发控制：达到上限则等待）
-            if (this.semaphore) {
-                log("info", `[load] #${this.index} 等待下载许可 (并发 ${this.semaphore.current}/${this.semaphore.maxConcurrent})`);
-                await this.semaphore.acquire();
-                log("info", `[load] #${this.index} 获得下载许可`);
-            }
-
-            try {
-                this._loadingPromise = this._loadInternal();
-                const result = await this._loadingPromise;
-                return result;
-            } finally {
-                // 释放下载许可（无论成功失败都释放）
+            // 先创建内部加载 promise，再获取下载许可：
+            // 排队等待期间重复调用 load()（如高优先级点击）能拿到同一个 promise，不会拿到 undefined
+            this._loadingPromise = (async () => {
+                // 获取下载许可（并发控制：达到上限则等待）
                 if (this.semaphore) {
-                    this.semaphore.release();
+                    log("info", `[load] #${this.index} 等待下载许可 (并发 ${this.semaphore.current}/${this.semaphore.maxConcurrent})`);
+                    const token = this.semaphore.acquire();
+                    this._semWaiter = token.waiter;
+                    // 高优先级：新入队直接插到队首
+                    if (highPriority) this.semaphore.promote(this._semWaiter);
+                    await token.promise;
+                    log("info", `[load] #${this.index} 获得下载许可`);
                 }
-                this.loading = false;
-            }
+                try {
+                    const result = await this._loadInternal();
+                    return result;
+                } finally {
+                    // 释放下载许可（无论成功失败都释放）
+                    if (this.semaphore) {
+                        this.semaphore.release();
+                    }
+                    this._semWaiter = null;
+                    this.loading = false;
+                }
+            })();
+            return this._loadingPromise;
         }
 
         /**
@@ -2717,15 +2768,16 @@
             wrapper.appendChild(progressEl);
             wrapper.appendChild(errorOverlay);
 
-            // 点击图片手动加载：autoLoad=false 时，只有用户点击过的图才会加载
+            // 点击图片手动加载：autoLoad=false 时，只有用户点击过的图才会加载；
+            // 无论 autoLoad 开关，点击的图及其附近都以高优先级插队下载
             wrapper.addEventListener("click", (e) => {
                 // 错误覆盖层按钮已单独处理（重试），不重复触发
                 if (e.target.closest(".ehv-big-erroroverlay")) return;
                 const fetcher = this.pageFetcher.queue[index];
                 if (!fetcher) return;
-                if (fetcher.state === FetchState.DONE || fetcher.loading) return;
+                if (fetcher.state === FetchState.DONE) return;
                 this._manualRequest.add(index);
-                this._loadImage(index);
+                this._loadImage(index, true);
             });
 
             this.imageContent.appendChild(wrapper);
@@ -2814,18 +2866,42 @@
         }
 
         /**
+         * 提升某张图及其预加载范围内图片的下载优先级（插队到信号量等待队列最前）
+         * 用于用户点击/跳转/滚动到的图片：目标图排最前，附近的图按距离依次排后，
+         * 让它们优先于 autoLoad 全量加载队列获得下载许可
+         * @param {number} index - 图片索引
+         */
+        _promoteAround(index) {
+            const queue = this.pageFetcher.queue;
+            if (!queue || !queue[index]) return;
+            const ahead = this.config.get("preloadAhead") || 3;
+            const behind = this.config.get("preloadBehind") || 1;
+            // 逆序 promote（先远的后近的），最后 promote 目标本身 → 目标在队首，附近图次之
+            const maxDist = Math.max(ahead, behind);
+            for (let d = maxDist; d >= 1; d--) {
+                if (index - d >= 0 && queue[index - d]) queue[index - d].promote();
+                if (index + d < queue.length && queue[index + d]) queue[index + d].promote();
+            }
+            queue[index].promote();
+        }
+
+        /**
          * 开始加载指定索引的大图（懒加载触发点）
          * 只有当前可见图和预加载范围内的图才会调用此方法
          * 通过 DownloadSemaphore 控制并发，避免所有图同时下载
          * @param {number} index - 图片索引
+         * @param {boolean} [highPriority=false] - 高优先级：目标图及附近图插队到队首优先下载
          */
-        async _loadImage(index) {
+        async _loadImage(index, highPriority = false) {
             const wrapper = this.itemMap.get(index);
             if (!wrapper) return;
             const img = wrapper.querySelector(".ehv-big-img");
             const progressEl = wrapper.querySelector(".ehv-big-progressbadge");
             const fetcher = this.pageFetcher.queue[index];
             if (!fetcher || !img) return;
+
+            // 高优先级请求：目标图及预加载范围内的图插队到下载队列最前
+            if (highPriority) this._promoteAround(index);
 
             // 已完成或正在加载，跳过
             if (fetcher.state === FetchState.DONE && fetcher.node.blobSrc) {
@@ -2846,7 +2922,7 @@
 
             // 开始加载原图（通过 DownloadSemaphore 控制并发）
             try {
-                const success = await fetcher.load();
+                const success = await fetcher.load(highPriority);
                 if (success && fetcher.node.blobSrc) {
                     // 开始显示真实图片前清除占位标记（防止占位 GIF 的 load 事件抢在真实图片之前处理）
                     delete img.dataset.placeholder;
@@ -3153,18 +3229,19 @@
                 const pageStart = Math.floor(index / perPage) * perPage;
                 const pageEnd = Math.min(pageStart + perPage, this.pageFetcher.queue.length);
                 for (let i = pageStart; i < pageEnd; i++) {
-                    // 当前页是用户正在看的，始终加载
-                    this._loadImage(i);
+                    // 当前页是用户正在看的，始终加载（高优先级）
+                    this._loadImage(i, true);
                 }
                 // autoLoad=true：无视预加载限制，后台全量加载所有图
                 if (autoLoadAll) this._loadAll();
             } else {
+                // 当前图（用户点击进入的目标）始终高优先级插队加载
+                this._loadImage(index, true);
                 if (autoLoadAll) {
-                    // autoLoad=true：自动加载所有图片（无视预加载限制）
+                    // autoLoad=true：无视预加载限制，后台全量加载所有图
                     this._loadAll();
                 } else {
                     // autoLoad=false：预加载设置生效，只自动加载当前图 + preloadAhead/Behind 范围
-                    this._loadImage(index);
                     this._preloadAround(index);
                 }
             }
@@ -3202,12 +3279,14 @@
                 const pageStart = Math.floor(index / perPage) * perPage;
                 const pageEnd = Math.min(pageStart + perPage, queue.length);
                 for (let i = pageStart; i < pageEnd; i++) {
-                    this._loadImage(i);
+                    // 用户主动跳转/翻页：页内图片高优先级加载
+                    this._loadImage(i, true);
                 }
             } else {
                 this._scrollToIndex(index);
                 // 懒加载：加载当前图并预加载附近（autoLoad=false 时预加载设置照常生效）
-                this._loadImage(index);
+                // 用户主动跳转的目标图高优先级插队
+                this._loadImage(index, true);
                 this._preloadAround(index);
             }
             this._updatePageInfo();
@@ -3354,7 +3433,8 @@
                 this.currentIndex = closestIndex;
                 this._updatePageInfo();
                 // 懒加载：加载当前可见图并预加载附近（autoLoad=false 时预加载设置照常生效）
-                this._loadImage(closestIndex);
+                // 滚动到的新当前图高优先级插队（autoLoad 全量加载时优先显示看到的图）
+                this._loadImage(closestIndex, true);
                 this._preloadAround(closestIndex);
                 this.bus.emit("big-step", closestIndex);
             }
