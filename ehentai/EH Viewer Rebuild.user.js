@@ -2,7 +2,7 @@
 // @name         EH Viewer Rebuild
 // @name:zh-CN   EH站阅读器重构版
 // @namespace    https://github.com/local/ehviewer-rebuild
-// @version      1.6.4
+// @version      1.6.6
 // @author       Rebuild from Comic Looms
 // @description  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
 // @description:zh-CN  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
@@ -17,7 +17,9 @@
 // @grant        GM_setValue
 // @run-at       document-end
 // ==/UserScript==
-// refactor:EH Viewer缩略图显示重构 从拆分雪碧图到Css控制
+//1.6.4 refactor:EH Viewer缩略图显示重构 从拆分雪碧图到Css控制
+//1.6.5 feature:实现autoLoad（自动加载） autoLoadInBackground（后台保持加载）设置功能
+//1.6.6 fix:重新设计大图界面autoLoad表现
 
 (function () {
     "use strict";
@@ -1414,10 +1416,13 @@
 
             this.loading = true;
             this.error = undefined;
+            log("info", `[load] #${this.index} 开始加载图片 (当前状态 state=${this.state})`);
 
             // 获取下载许可（并发控制：达到上限则等待）
             if (this.semaphore) {
+                log("info", `[load] #${this.index} 等待下载许可 (并发 ${this.semaphore.current}/${this.semaphore.maxConcurrent})`);
                 await this.semaphore.acquire();
+                log("info", `[load] #${this.index} 获得下载许可`);
             }
 
             try {
@@ -1458,6 +1463,7 @@
 
                 // 步骤3：标记完成
                 this.state = FetchState.DONE;
+                log("info", `[load] #${this.index} 图片加载完成 (${(this.node.blob.size / 1024).toFixed(0)} KB)`);
                 this._notifyLoaded(true);
                 return true;
             } catch (e) {
@@ -2218,6 +2224,10 @@
             this.autoPlayTimer = null;
             /** @type {Set<number>} 已预加载的索引 */
             this.preloaded = new Set();
+            /** @type {Set<number>} autoLoad=false 时用户手动点击请求加载的图片索引 */
+            this._manualRequest = new Set();
+            /** @type {number|null} 后台保持加载定时器（autoLoadInBackground） */
+            this._bgLoadTimer = null;
             /** @type {boolean} 是否正在滚动 */
             this._isScrolling = false;
             /** @type {number|null} 滚动定时器 */
@@ -2504,7 +2514,17 @@
                     const count = this.config.get("threads") || 3;
                     this.pageFetcher.updateThreadCount(count);
                 }
+                if (key === "autoLoadInBackground") {
+                    // 后台保持加载开关变化：已处于后台时立即按新值启动/停止
+                    if (document.hidden) {
+                        if (this.config.get("autoLoadInBackground")) this._startBackgroundLoad();
+                        else this._stopBackgroundLoad();
+                    }
+                }
             });
+
+            // 标签页可见性变化：实现 autoLoadInBackground（失焦保持加载 / 失焦暂停）
+            document.addEventListener("visibilitychange", () => this._onVisibilityChange());
         }
 
         /**
@@ -2654,6 +2674,17 @@
             wrapper.appendChild(img);
             wrapper.appendChild(progressEl);
             wrapper.appendChild(errorOverlay);
+
+            // 点击图片手动加载：autoLoad=false 时，只有用户点击过的图才会加载
+            wrapper.addEventListener("click", (e) => {
+                // 错误覆盖层按钮已单独处理（重试），不重复触发
+                if (e.target.closest(".ehv-big-erroroverlay")) return;
+                const fetcher = this.pageFetcher.queue[index];
+                if (!fetcher) return;
+                if (fetcher.state === FetchState.DONE || fetcher.loading) return;
+                this._manualRequest.add(index);
+                this._loadImage(index);
+            });
 
             this.imageContent.appendChild(wrapper);
             this.itemMap.set(index, wrapper);
@@ -3065,6 +3096,7 @@
             await new Promise(r => requestAnimationFrame(r));
             this._applyMode();
             const mode = this.config.get("readMode");
+            const autoLoadAll = this.config.get("autoLoad") !== false;
             if (mode === "pagination") {
                 // 翻页模式：重置平移偏移量，加载当前页所有图
                 this._stopPanningAnimation();
@@ -3079,12 +3111,20 @@
                 const pageStart = Math.floor(index / perPage) * perPage;
                 const pageEnd = Math.min(pageStart + perPage, this.pageFetcher.queue.length);
                 for (let i = pageStart; i < pageEnd; i++) {
+                    // 当前页是用户正在看的，始终加载
                     this._loadImage(i);
                 }
+                // autoLoad=true：无视预加载限制，后台全量加载所有图
+                if (autoLoadAll) this._loadAll();
             } else {
-                // 懒加载：只加载当前图，然后预加载附近的图
-                this._loadImage(index);
-                this._preloadAround(index);
+                if (autoLoadAll) {
+                    // autoLoad=true：自动加载所有图片（无视预加载限制）
+                    this._loadAll();
+                } else {
+                    // autoLoad=false：预加载设置生效，只自动加载当前图 + preloadAhead/Behind 范围
+                    this._loadImage(index);
+                    this._preloadAround(index);
+                }
             }
             this.bus.emit("big-opened", index);
         }
@@ -3097,6 +3137,7 @@
             this.overlay.style.display = "none";
             document.body.style.overflow = "";
             this._stopAutoPlay();
+            this._stopBackgroundLoad(); // 关闭阅读视图时停止后台保持加载循环
             if (this.config.get("recordReadingProgress")) {
                 this._saveProgress(this.currentIndex);
             }
@@ -3123,7 +3164,7 @@
                 }
             } else {
                 this._scrollToIndex(index);
-                // 懒加载：加载当前图并预加载附近
+                // 懒加载：加载当前图并预加载附近（autoLoad=false 时预加载设置照常生效）
                 this._loadImage(index);
                 this._preloadAround(index);
             }
@@ -3270,7 +3311,7 @@
             if (closestIndex !== this.currentIndex) {
                 this.currentIndex = closestIndex;
                 this._updatePageInfo();
-                // 懒加载：加载当前可见图并预加载附近
+                // 懒加载：加载当前可见图并预加载附近（autoLoad=false 时预加载设置照常生效）
                 this._loadImage(closestIndex);
                 this._preloadAround(closestIndex);
                 this.bus.emit("big-step", closestIndex);
@@ -3338,6 +3379,74 @@
         }
 
         /**
+         * 判断某张图是否允许自动加载（autoLoad 与预加载范围）
+         * autoLoad=true：所有图片都允许（全量加载，无视预加载限制）
+         * autoLoad=false：仅预加载范围内（当前图 ± preloadAhead/Behind）或用户手动点击过的图允许
+         * 用于后台保持加载循环的过滤；常规懒加载路径直接调用 _loadImage，不依赖此判断
+         * @param {number} index - 图片索引
+         * @returns {boolean}
+         */
+        _canAutoLoad(index) {
+            if (this.config.get("autoLoad") !== false) return true;
+            if (this._manualRequest.has(index)) return true;
+            const behind = this.config.get("preloadBehind") || 1;
+            const ahead = this.config.get("preloadAhead") || 3;
+            const start = this.currentIndex - behind;
+            const end = this.currentIndex + ahead;
+            return index >= start && index <= end;
+        }
+
+        /**
+         * 标签页可见性变化：实现 autoLoadInBackground
+         * 失焦且开启"后台保持加载"时，持续向加载队列喂任务（并发仍受 threads 限制）；
+         * 失焦但未开启时不喂新任务（已发起的下载自然继续）；恢复焦点后停止后台循环
+         */
+        _onVisibilityChange() {
+            if (document.hidden) {
+                if (this.config.get("autoLoadInBackground")) {
+                    this._startBackgroundLoad();
+                } else {
+                    this._stopBackgroundLoad();
+                }
+            } else {
+                this._stopBackgroundLoad();
+            }
+        }
+
+        /**
+         * 启动后台保持加载循环
+         * 每 300ms 喂一个未加载且允许自动加载的图片，其余由下载信号量排队限流
+         */
+        _startBackgroundLoad() {
+            if (this._bgLoadTimer) return;
+            this._bgLoadTimer = setInterval(() => {
+                const queue = this.pageFetcher.queue;
+                let found = false;
+                for (let i = 0; i < queue.length; i++) {
+                    const fetcher = queue[i];
+                    if (!fetcher) continue;
+                    if (fetcher.state === FetchState.DONE || fetcher.loading) continue;
+                    if (!this._canAutoLoad(i)) continue;
+                    this._loadImage(i).catch(() => { });
+                    found = true;
+                    break; // 每次只喂一个，剩余由下一个 tick 处理（受并发限制）
+                }
+                // 全部已加载或全部不允许自动加载：停止循环
+                if (!found) this._stopBackgroundLoad();
+            }, 300);
+        }
+
+        /**
+         * 停止后台保持加载循环
+         */
+        _stopBackgroundLoad() {
+            if (this._bgLoadTimer) {
+                clearInterval(this._bgLoadTimer);
+                this._bgLoadTimer = null;
+            }
+        }
+
+        /**
          * 预加载当前图片前后的图片
          */
         _preloadAround(index) {
@@ -3356,6 +3465,20 @@
                 this._loadImage(i).catch(() => {
                     this.preloaded.delete(i);
                 });
+            }
+        }
+
+        /**
+         * 全量加载所有图片（autoLoad=true 时进入阅读界面自动加载全部，无视预加载限制）
+         * 并发仍由 DownloadSemaphore（threads）限流，未加载的图逐个排队下载
+         */
+        _loadAll() {
+            const queue = this.pageFetcher.queue;
+            for (let i = 0; i < queue.length; i++) {
+                const fetcher = queue[i];
+                if (!fetcher) continue;
+                if (fetcher.state === FetchState.DONE || fetcher.loading) continue;
+                this._loadImage(i).catch(() => { });
             }
         }
 
