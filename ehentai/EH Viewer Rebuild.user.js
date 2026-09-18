@@ -2,7 +2,7 @@
 // @name         EH Viewer Rebuild
 // @name:zh-CN   EH站阅读器重构版
 // @namespace    https://github.com/local/ehviewer-rebuild
-// @version      1.6.7
+// @version      1.6.8
 // @author       Rebuild from Comic Looms
 // @description  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
 // @description:zh-CN  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
@@ -18,9 +18,10 @@
 // @run-at       document-end
 // ==/UserScript==
 //1.6.4 refactor:EH Viewer缩略图显示重构 从拆分雪碧图到Css控制
-//1.6.5 feature:实现autoLoad（自动加载） autoLoadInBackground（后台保持加载）设置功能
+//1.6.5 feat:实现autoLoad（自动加载） autoLoadInBackground（后台保持加载）设置功能
 //1.6.6 fix:重新设计大图界面autoLoad表现
 //1.6.7 fix:超时重试重新提取nl链接 url累积
+//1.6.8 feat:autoExpandAllPages自动加载全部缩略图页
 (function () {
     "use strict";
 
@@ -33,10 +34,10 @@
      * 仿照原脚本 regulars 对象的设计
      */
     const REGEX = {
-        // 画廊页URL匹配：https://exhentai.org/g/{gid}/{token}/ （含 wn09.shop 镜像域名）
-        workURL: /^https?:\/\/(exhentai\.org|e-hentai\.org)\/g\/\d+\/[\w-]+\/?/,
-        // 图片详情页URL匹配：https://exhentai.org/s/{hash}/{gid}-{pagenum} （含 wn09.shop 镜像域名）
-        pageURL: /^https?:\/\/(exhentai\.org|e-hentai\.org)\/s\/[\w-]+\/\d+-\d+/,
+        // 画廊页URL匹配：https://exhentai.org/g/{gid}/{token}/ （含 wn09.shop / wn08.ru 镜像域名）
+        workURL: /^https?:\/\/(exhentai\.org|e-hentai\.org|[\w.-]*wn09\.shop|[\w.-]*wn08\.ru)\/g\/\d+\/[\w-]+\/?/,
+        // 图片详情页URL匹配：https://exhentai.org/s/{hash}/{gid}-{pagenum} （含 wn09.shop / wn08.ru 镜像域名）
+        pageURL: /^https?:\/\/(exhentai\.org|e-hentai\.org|[\w.-]*wn09\.shop|[\w.-]*wn08\.ru)\/s\/[\w-]+\/\d+-\d+/,
         // 从CSS background样式中提取雪碧图URL：url("...") 或 url('...') 或 url(...)
         // 注意：原脚本用 /url\((.*?)\)/ 不处理引号，提取后需手动去掉引号
         sprite: /url\(["']?(.*?)["']?\)/,
@@ -108,6 +109,7 @@
         rowHeight: 200,           // 自适应布局每行参考高度
         enableFlowVision: false,  // 启用自适应视图布局
         hdThumbnails: false,      // 高清缩略图（从大图重采样）
+        autoExpandAllPages: false, // 缩略图模式自动展开全部页数（true：一次性加载所有分页；false：滚动到底部再加载）
 
         // ===== 下载相关 =====
         downloadThreads: 3,       // 下载时最大并发数
@@ -1767,6 +1769,8 @@
             this._layoutTimer = null;
             /** @type {number} 上一次计算的行高（用于最后一行不足时参考） */
             this._lastRowHeight = 0;
+            /** @type {boolean} 是否正在自动展开全部页数 */
+            this._expandAllRunning = false;
 
             if (!this.container) {
                 log("error", "#gdt element not found");
@@ -1788,6 +1792,10 @@
                 const chapter = this.pageFetcher.chapters[this.pageFetcher.chapterIndex];
                 this._renderItems(this.pageFetcher.queue);
                 this._updateLoadingState(chapter?.done || false);
+            }
+            // autoExpandAllPages=true：激活后自动展开全部页数
+            if (this.config.get("autoExpandAllPages")) {
+                this._expandAllPages();
             }
         }
 
@@ -1828,6 +1836,10 @@
             this.bus.subscribe("config-changed", (key) => {
                 if (key === "colCount" || key === "enableFlowVision" || key === "rowHeight") {
                     this._applyLayout();
+                }
+                // 开启"自动展开全部页数"时立即加载剩余分页
+                if (key === "autoExpandAllPages" && this.config.get("autoExpandAllPages")) {
+                    this._expandAllPages();
                 }
             });
 
@@ -1890,6 +1902,31 @@
                 await this.pageFetcher.appendNextPage();
             } finally {
                 this.loadingNext = false;
+            }
+        }
+
+        /**
+         * 自动展开全部页数（autoExpandAllPages=true 时使用）
+         * 循环追加分页直到全部加载完成；每追加一页会触发 page-appended 事件由订阅方渲染
+         * 与滚动加载共用 appendNextPage 的并发锁，安全并发；guard 为防御性上限
+         */
+        async _expandAllPages() {
+            if (this._expandAllRunning) return;
+            this._expandAllRunning = true;
+            try {
+                const chapter = this.pageFetcher.chapters[this.pageFetcher.chapterIndex];
+                let guard = 0;
+                while (chapter && !chapter.done && !this.pageFetcher.aborted) {
+                    // 防御性上限：防止迭代器异常导致死循环
+                    if (++guard > 10000) {
+                        log("warn", "_expandAllPages reached safety limit (10000)");
+                        break;
+                    }
+                    const ok = await this.pageFetcher.appendNextPage();
+                    if (!ok) break;
+                }
+            } finally {
+                this._expandAllRunning = false;
             }
         }
 
@@ -3989,6 +4026,8 @@
                 { min: 50, max: 500, tooltip: "自适应视图布局下每行的参考高度" }));
             section.appendChild(this._createItem("高清缩略图", "hdThumbnails", "checkbox",
                 { tooltip: "从大图重采样更清晰的缩略图，会影响性能" }));
+            section.appendChild(this._createItem("自动展开全部页数", "autoExpandAllPages", "checkbox",
+                { tooltip: "开启后缩略图模式自动加载并展开全部页数；关闭时滚动到底部才加载下一页" }));
             section.appendChild(this._createItem("最大并发下载数", "threads", "number",
                 { min: 1, max: 10, tooltip: "大图浏览时同时下载的图片数量，数值越大加载越快但占用带宽越多" }));
             section.appendChild(this._createItem("向后预加载张数", "preloadAhead", "number",
