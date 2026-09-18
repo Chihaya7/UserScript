@@ -2,7 +2,7 @@
 // @name         EH Viewer Rebuild
 // @name:zh-CN   EH站阅读器重构版
 // @namespace    https://github.com/local/ehviewer-rebuild
-// @version      1.6.0
+// @version      1.6.4
 // @author       Rebuild from Comic Looms
 // @description  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
 // @description:zh-CN  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
@@ -17,6 +17,7 @@
 // @grant        GM_setValue
 // @run-at       document-end
 // ==/UserScript==
+// refactor:EH Viewer缩略图显示重构 从拆分雪碧图到Css控制
 
 (function () {
     "use strict";
@@ -30,9 +31,9 @@
      * 仿照原脚本 regulars 对象的设计
      */
     const REGEX = {
-        // 画廊页URL匹配：https://exhentai.org/g/{gid}/{token}/
+        // 画廊页URL匹配：https://exhentai.org/g/{gid}/{token}/ （含 wn09.shop 镜像域名）
         workURL: /^https?:\/\/(exhentai\.org|e-hentai\.org)\/g\/\d+\/[\w-]+\/?/,
-        // 图片详情页URL匹配：https://exhentai.org/s/{hash}/{gid}-{pagenum}
+        // 图片详情页URL匹配：https://exhentai.org/s/{hash}/{gid}-{pagenum} （含 wn09.shop 镜像域名）
         pageURL: /^https?:\/\/(exhentai\.org|e-hentai\.org)\/s\/[\w-]+\/\d+-\d+/,
         // 从CSS background样式中提取雪碧图URL：url("...") 或 url('...') 或 url(...)
         // 注意：原脚本用 /url\((.*?)\)/ 不处理引号，提取后需手动去掉引号
@@ -58,6 +59,13 @@
         // 提取文件名扩展名
         extension: /\.(\w+)(?:\?|$)/,
     };
+
+    /**
+     * TRANSPARENT_1PX_GIF - 1px 透明 GIF（data URI）
+     * 用于大图占位阶段给无 src 的 img 一个合法源，
+     * 避免浏览器把空 img 渲染成"破图占位框 + alt 文字"显示在左上角
+     */
+    const TRANSPARENT_1PX_GIF = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
 
     /**
      * DEFAULT_CONFIG - 默认配置项
@@ -186,6 +194,36 @@
         } catch (e) {
             return url;
         }
+    }
+
+    /**
+     * 雪碧图直显（路线A）：把裁剪区作为背景显示在元素上
+     * 先用 px 定位 + auto 显示原始尺寸，待雪碧图真实尺寸加载后切换为百分比定位，
+     * 使任意容器尺寸（colCount/流式布局/窗口缩放）下都精确显示对应裁剪区
+     * 百分比公式：size = SW/cw×100% SH/ch×100%；position = x/(SW-cw)×100% y/(SH-ch)×100%
+     * 缩略图网格与大图阅读占位共用此函数
+     * @param {HTMLElement} el - 背景承载元素（网格imgwrap或大图img）
+     * @param {{url:string, positions:Array<{x:number,y:number,w:number,h:number}>, groupIndex:number}} sprite - 雪碧图信息
+     */
+    function applySpriteBackground(el, sprite) {
+        const rect = sprite.positions[sprite.groupIndex] || { x: 0, y: 0, w: 100, h: 100 };
+        el.style.backgroundImage = `url("${sprite.url}")`;
+        el.style.backgroundRepeat = "no-repeat";
+        // 初始：原始尺寸 + px 定位（尺寸信息未加载时也能先显示裁剪区）
+        el.style.backgroundPosition = `${-rect.x}px ${-rect.y}px`;
+        SpriteSplitter.getSpriteSize(sprite.url).then(size => {
+            if (!size || !el.isConnected) return;
+            const { w: SW, h: SH } = size;
+            const { x, y, w: cw, h: ch } = rect;
+            if (!(SW > 0 && SH > 0 && cw > 0 && ch > 0)) return;
+            // 百分比定位：相对容器，任何容器尺寸下裁剪区都精确填满
+            el.style.backgroundSize = `${(SW / cw * 100).toFixed(4)}% ${(SH / ch * 100).toFixed(4)}%`;
+            const px = (SW - cw > 0) ? `${(x / (SW - cw) * 100).toFixed(4)}%` : "0px";
+            const py = (SH - ch > 0) ? `${(y / (SH - ch) * 100).toFixed(4)}%` : "0px";
+            el.style.backgroundPosition = `${px} ${py}`;
+        }).catch(e => {
+            log("warn", `getSpriteSize failed for ${sprite.url}:`, e);
+        });
     }
 
     /**
@@ -479,20 +517,20 @@
          * @param {string} thumb - 缩略图URL（或blob URL）
          * @param {string} href - 图片详情页URL
          * @param {string} title - 图片标题/文件名
-         * @param {Promise<string>} [delaySrc] - 延迟加载的缩略图Promise（雪碧图拆分时使用）
          * @param {object} [wh] - 缩略图宽高 {w, h}
+         * @param {object} [sprite] - 雪碧图信息 {url, positions, groupIndex}（路线A直显用）
          */
-        constructor(thumb, href, title, delaySrc, wh) {
+        constructor(thumb, href, title, wh, sprite) {
             /** @type {string} 缩略图URL */
             this.thumbnailImage = thumb;
             /** @type {string} 详情页URL */
             this.href = href;
             /** @type {string} 图片标题/文件名 */
             this.title = title;
-            /** @type {Promise<string>|undefined} 延迟加载的缩略图（雪碧图拆分结果） */
-            this.delaySrc = delaySrc;
             /** @type {{w:number, h:number}|undefined} 缩略图宽高 */
             this.wh = wh;
+            /** @type {{url:string, positions:Array<{x:number,y:number,w:number,h:number}>, groupIndex:number}|undefined} 雪碧图信息（网格用CSS背景直显，独立URL按需懒拆分） */
+            this.sprite = sprite;
             /** @type {string|undefined} 原图URL（获取详情页后填充） */
             this.originSrc = undefined;
             /** @type {string|undefined} 图片blob URL（下载完成后填充） */
@@ -503,6 +541,21 @@
             this.contentType = undefined;
             /** @type {number} 在列表中的索引位置 */
             this.index = -1;
+        }
+
+        /**
+         * 获取独立的缩略图URL（雪碧图懒拆分，整组共享一次拆分并缓存）
+         * 仅当真正需要独立图片URL时调用（如大图阅读占位）；网格显示直接用CSS背景定位，不调用此方法
+         * @returns {Promise<string|null>}
+         */
+        async getSplitThumbUrl() {
+            if (!this.sprite) return null;
+            try {
+                return await SpriteSplitter.getGroupThumbUrl(this.sprite);
+            } catch (e) {
+                log("error", "getSplitThumbUrl failed:", e);
+                return null;
+            }
         }
     }
 
@@ -640,6 +693,58 @@
             const x = match ? parseInt(match[1]) : 0;
             const y = match ? parseInt(match[2]) : 0;
             return { x, y, w, h };
+        }
+
+        // ===== 路线A：懒拆分与尺寸缓存 =====
+        /** @type {Map<string, Promise<string[]>>} 雪碧图URL -> 整组拆分结果的Promise（懒拆分缓存，同一URL只下载/编码一次） */
+        static groupCache = new Map();
+        /** @type {Map<string, Promise<{w:number,h:number}|null>>} 雪碧图URL -> 真实尺寸Promise（一次Image加载，浏览器缓存命中） */
+        static sizeCache = new Map();
+
+        /**
+         * 懒拆分：获取某个裁剪区对应的独立缩略图URL
+         * 整组共享一次拆分，结果按组内序号取用；失败时回退为雪碧图URL并移出缓存以便重试
+         * @param {{url:string, positions:Array<{x:number,y:number,w:number,h:number}>, groupIndex:number}} sprite - 雪碧图信息
+         * @returns {Promise<string>}
+         */
+        static getGroupThumbUrl(sprite) {
+            let p = SpriteSplitter.groupCache.get(sprite.url);
+            if (!p) {
+                p = SpriteSplitter.split(sprite.url, sprite.positions).catch(err => {
+                    SpriteSplitter.groupCache.delete(sprite.url);
+                    log("warn", "SpriteSplitter lazy split failed, fallback to sprite url:", err);
+                    return sprite.positions.map(() => sprite.url);
+                });
+                SpriteSplitter.groupCache.set(sprite.url, p);
+            }
+            return p.then(results => results[sprite.groupIndex] || sprite.url);
+        }
+
+        /**
+         * 获取雪碧图真实尺寸（一次 Image 加载，浏览器缓存命中；不做 canvas、不编码）
+         * @param {string} url - 雪碧图URL
+         * @returns {Promise<{w:number,h:number}|null>} 失败或超时返回 null
+         */
+        static getSpriteSize(url) {
+            if (!SpriteSplitter.sizeCache.has(url)) {
+                const p = new Promise((resolve) => {
+                    const img = new Image();
+                    const timer = setTimeout(() => {
+                        resolve(null);
+                    }, 10000);
+                    img.onload = () => {
+                        clearTimeout(timer);
+                        resolve({ w: img.naturalWidth, h: img.naturalHeight });
+                    };
+                    img.onerror = () => {
+                        clearTimeout(timer);
+                        resolve(null);
+                    };
+                    img.src = url;
+                });
+                SpriteSplitter.sizeCache.set(url, p);
+            }
+            return SpriteSplitter.sizeCache.get(url);
         }
     }
 
@@ -865,7 +970,6 @@
                         wh: extractRectFromSrc(image?.src) || extractRectFromStyle(node.style) || { w: 100, h: 100 },
                         style: node.style,
                         backgroundImage: null,
-                        delaySrc: undefined,
                     };
                 };
                 nodes = Array.from(query);
@@ -888,7 +992,6 @@
                             wh: extractRectFromStyle(node.style) || { w: 100, h: 100 },
                             style: node.style,
                             thumbnailImage: "",
-                            delaySrc: undefined,
                         };
                     };
                     nodes = Array.from(query);
@@ -916,7 +1019,6 @@
                             wh: extractRectFromStyle(div?.style) || { w: 100, h: 100 },
                             style: div?.style,
                             thumbnailImage: "",
-                            delaySrc: undefined,
                         };
                     };
                     nodes = Array.from(query);
@@ -958,7 +1060,6 @@
                         wh: extractRectFromStyle(thumbDivs[i]?.style) || { w: 100, h: 100 },
                         style: thumbDivs[i]?.style,
                         thumbnailImage: "",
-                        delaySrc: undefined,
                     });
                 }
             }
@@ -984,7 +1085,9 @@
                     }
                 }
 
-                // 对每个雪碧图组进行拆分
+                // ===== 雪碧图直显（路线A）：不再立即拆分 =====
+                // 网格缩略图改用 CSS 背景定位直显雪碧图裁剪区，避免逐张 PNG 编码阻塞显示；
+                // 独立缩略图URL（大图阅读占位等）按需懒拆分，见 SpriteSplitter.getGroupThumbUrl
                 for (const group of spriteGroups) {
                     let url = group.url;
                     if (!url.startsWith("http")) url = this.origin + url;
@@ -993,18 +1096,15 @@
                         // 只有一张图，直接用雪碧图URL作为缩略图
                         nodeInfos[group.range[0].index].thumbnailImage = url;
                     } else {
-                        // 多张图，创建延迟Promise，用SpriteSplitter拆分
+                        // 多张图：记录雪碧图信息（URL + 整组裁剪位置 + 组内序号），供网格直显与懒拆分使用
                         const positions = group.range.map(r => SpriteSplitter.parsePosition(r.style));
-                        // 每个节点一个独立的Promise，resolve时设置对应的缩略图URL
-                        const delayPromise = SpriteSplitter.split(url, positions).then(results => {
-                            return results;
-                        }).catch(err => {
-                            // 回退：用雪碧图URL作为所有节点的缩略图
-                            return group.range.map(() => url);
-                        });
                         for (let i = 0; i < group.range.length; i++) {
                             const idx = group.range[i].index;
-                            nodeInfos[idx].delaySrc = delayPromise.then(results => results[i]);
+                            nodeInfos[idx].sprite = {
+                                url: url,
+                                positions: positions,
+                                groupIndex: i,
+                            };
                         }
                     }
                 }
@@ -1017,8 +1117,8 @@
                     info.thumbnailImage,
                     info.href,
                     info.title,
-                    info.delaySrc,
-                    info.wh
+                    info.wh,
+                    info.sprite
                 ));
             }
             return result;
@@ -1815,22 +1915,21 @@
             const imgWrap = document.createElement("div");
             imgWrap.className = "ehv-thumb-imgwrap";
 
-            const img = document.createElement("img");
-            img.className = "ehv-thumb-img";
-            img.alt = node.title;
-            img.loading = "lazy";
-
             // 设置缩略图源
             if (node.thumbnailImage) {
+                // 单图组：直接用缩略图 URL 作为 img 源
+                const img = document.createElement("img");
+                img.className = "ehv-thumb-img";
+                img.alt = node.title;
+                img.loading = "lazy";
                 img.src = node.thumbnailImage;
-            } else if (node.delaySrc) {
-                // 雪碧图拆分结果是 Promise，等待 resolve
-                node.delaySrc.then(url => {
-                    img.src = url;
-                }).catch(e => {
-                    log("warn", `Delay src failed for index ${fetcher.index}:`, e);
-                    img.src = "";
-                });
+                imgWrap.appendChild(img);
+            } else if (node.sprite) {
+                // 雪碧图直显（路线A）：CSS 背景定位显示对应裁剪区，不做 canvas 拆分
+                // 百分比 background-size/position 相对容器，colCount/流式布局/窗口缩放自动正确
+                // 注意：雪碧图节点不再创建 img 元素——无 src 的空 img 会被浏览器渲染成
+                // "破图占位框 + alt 文字"显示在缩略图左上角；背景直接画在 imgWrap 上
+                applySpriteBackground(imgWrap, node.sprite);
             } else {
             }
 
@@ -1841,8 +1940,6 @@
                 item.dataset.ratio = "0.75"; // 默认 3:4
             }
             // 注意：不在这里设置固定尺寸，由 _layoutJustifiedRows() 统一计算
-
-            imgWrap.appendChild(img);
 
             // 页码标签
             const pageLabel = document.createElement("div");
@@ -2521,6 +2618,13 @@
 
             // 图片加载完成后重新应用缩放（翻页模式下需要naturalWidth计算像素宽度）
             img.addEventListener("load", () => {
+                // 占位用的 1px 透明 GIF 加载完成：只清标记，不按真实图片处理
+                if (img.dataset.placeholder === "1") {
+                    delete img.dataset.placeholder;
+                    return;
+                }
+                // 清除占位阶段设置的宽高比约束，让 _applyItemScale 按真实图片比例计算盒子
+                img.style.aspectRatio = "";
                 this._applyItemScale(wrapper);
                 // 图片加载后重新判断对齐方式（内容大小可能变化）
                 if (this.config.get("readMode") === "pagination") {
@@ -2573,6 +2677,8 @@
 
             // 如果已完成，直接显示原图
             if (fetcher.state === FetchState.DONE && fetcher.node.blobSrc) {
+                // 开始显示真实图片前清除占位标记（防止占位 GIF 的 load 事件抢在真实图片之前处理）
+                delete img.dataset.placeholder;
                 img.src = fetcher.node.blobSrc;
                 if (progressEl) progressEl.style.display = "none";
                 wrapper.classList.add("ehv-big-loaded");
@@ -2588,9 +2694,43 @@
             }
 
             // 未下载完：先显示缩略图作为占位（和大图一样大）
-            const thumbUrl = await this._getThumbUrl(fetcher);
-            if (thumbUrl) {
-                img.src = thumbUrl;
+            if (fetcher.node.sprite) {
+                // 路线A：雪碧图节点用 CSS 背景直显占位（即时显示，无需等待懒拆分）
+                // 占位阶段 img 无 src、无内在尺寸，必须按裁剪区比例给盒子定型，
+                // 否则连续模式（width% + height:auto）塌成横条、横向模式（height + width:auto）塌成竖条
+                const rect = fetcher.node.sprite.positions?.[fetcher.node.sprite.groupIndex];
+                if (rect && rect.w > 0 && rect.h > 0) {
+                    const ratio = rect.w / rect.h;
+                    img.style.aspectRatio = `${rect.w} / ${rect.h}`;
+                    if (this.config.get("readMode") === "pagination") {
+                        // 翻页模式占位阶段宽高为 auto，按视口比例给显式尺寸（口径与 _applyItemScale 一致）
+                        const perPage = Math.max(1, this.config.get("paginationIMGCount") || 1);
+                        const baseWidth = window.innerWidth / perPage;
+                        const baseHeight = window.innerHeight;
+                        const baseRatio = baseWidth / baseHeight;
+                        const scaleRatio = this._getCurrentScale() / 100;
+                        let w, h;
+                        if (ratio > baseRatio) {
+                            w = baseWidth;
+                            h = baseWidth / ratio;
+                        } else {
+                            h = baseHeight;
+                            w = baseHeight * ratio;
+                        }
+                        img.style.width = (w * scaleRatio) + "px";
+                        img.style.height = (h * scaleRatio) + "px";
+                    }
+                }
+                // 占位阶段给 img 一个合法源（1px 透明 GIF）：
+                // 空 src 的 img 会被浏览器渲染成"破图占位框 + alt 文字"盖在背景上
+                img.src = TRANSPARENT_1PX_GIF;
+                img.dataset.placeholder = "1";
+                applySpriteBackground(img, fetcher.node.sprite);
+            } else {
+                const thumbUrl = await this._getThumbUrl(fetcher);
+                if (thumbUrl) {
+                    img.src = thumbUrl;
+                }
             }
 
             // 右上角显示"待加载"提示（还没开始下载）
@@ -2616,6 +2756,8 @@
 
             // 已完成或正在加载，跳过
             if (fetcher.state === FetchState.DONE && fetcher.node.blobSrc) {
+                // 开始显示真实图片前清除占位标记（防止占位 GIF 的 load 事件抢在真实图片之前处理）
+                delete img.dataset.placeholder;
                 img.src = fetcher.node.blobSrc;
                 if (progressEl) progressEl.style.display = "none";
                 wrapper.classList.add("ehv-big-loaded");
@@ -2633,6 +2775,8 @@
             try {
                 const success = await fetcher.load();
                 if (success && fetcher.node.blobSrc) {
+                    // 开始显示真实图片前清除占位标记（防止占位 GIF 的 load 事件抢在真实图片之前处理）
+                    delete img.dataset.placeholder;
                     img.src = fetcher.node.blobSrc;
                     if (progressEl) progressEl.style.display = "none";
                     wrapper.classList.add("ehv-big-loaded");
@@ -2658,17 +2802,18 @@
                 console.log('[EHViewer-Big] _getThumbUrl: thumbnailImage=', fetcher.node.thumbnailImage.substring(0, 60));
                 return fetcher.node.thumbnailImage;
             }
-            if (fetcher.node.delaySrc) {
+            if (fetcher.node.sprite) {
+                // 路线A：雪碧图节点按需懒拆分，整组共享一次拆分并缓存
                 try {
-                    const url = await fetcher.node.delaySrc;
-                    console.log('[EHViewer-Big] _getThumbUrl: delaySrc resolved=', url?.substring?.(0, 60) || url, 'type=', typeof url, 'isArray=', Array.isArray(url));
+                    const url = await fetcher.node.getSplitThumbUrl();
+                    console.log('[EHViewer-Big] _getThumbUrl: lazy split resolved=', url?.substring?.(0, 60) || url);
                     return url;
                 } catch (e) {
-                    console.error('[EHViewer-Big] _getThumbUrl: delaySrc FAILED:', e);
+                    console.error('[EHViewer-Big] _getThumbUrl: lazy split FAILED:', e);
                     return null;
                 }
             }
-            console.warn('[EHViewer-Big] _getThumbUrl: NO thumbnailImage and NO delaySrc!');
+            console.warn('[EHViewer-Big] _getThumbUrl: NO thumbnailImage and NO sprite!');
             return null;
         }
 
@@ -2807,6 +2952,11 @@
                     // 图片未加载，先用auto，等加载后重新应用
                     img.style.width = "auto";
                     img.style.height = "auto";
+                    // 雪碧图占位阶段：img 有宽高比约束但无内在尺寸，给兜底高度避免盒子塌陷成条状
+                    // （宽度由 aspect-ratio 自动推导，加载后由上面的分支重新计算）
+                    if (img.style.aspectRatio) {
+                        img.style.height = (baseHeight * scaleRatio) + "px";
+                    }
                 }
 
                 // wrapper尺寸跟随图片（不固定宽高）
