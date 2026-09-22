@@ -2,7 +2,7 @@
 // @name         EH Viewer Rebuild
 // @name:zh-CN   EH站阅读器重构版
 // @namespace    ehentai
-// @version      1.6.10
+// @version      1.8.00
 // @author       Rebuild from Comic Looms
 // @description  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
 // @description:zh-CN  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
@@ -17,18 +17,19 @@
 // @grant        GM_setValue
 // @run-at       document-end
 // ==/UserScript==
+// 脚本版本号常量，每次版本更新时需同步更新此处和头部@version
+const EHV_SCRIPT_VERSION = "1.8.00";
 //1.6.4 refactor:EH Viewer缩略图显示重构 从拆分雪碧图到Css控制
 //1.6.5 feat:实现autoLoad（自动加载） autoLoadInBackground（后台保持加载）设置功能
 //1.6.6 fix:重新设计大图界面autoLoad表现
 //1.6.7 fix:超时重试重新提取nl链接 url累积
 //1.6.8 feat:autoExpandAllPages自动加载全部缩略图页
 //1.6.10 fix:_loadAll()先进先出加载队列改为open()高优先级插队
+//1.8.00 refactor:缩略图与大图界面雪碧图直显改为固定内框+transform scale，不再依赖雪碧图完整尺寸(getSpriteSize)，修复慢加载时位置错位以及出现的一系列问题
 //待解决bug
 //Retry with nl value:  不知道是哪个图片触发的
-//在大图模式下，大图替换缩略图失效，必须出现滚动鼠标之类的操作它才会又正常替换
-//大图模式 横向翻页进入的大图页码不对
-//雪碧图加载迟缓时出现划分缩略图位置不对情况
 //自动加载队列及优先级实现方式有些复杂，感觉可以重构
+//浏览器缩放图片错位，主要是横向浏览模式
 (function () {
     "use strict";
 
@@ -208,35 +209,48 @@
     }
 
     /**
-     * 雪碧图直显（路线A）：把裁剪区作为背景显示在元素上
-     * 先用 px 定位 + auto 显示原始尺寸，待雪碧图真实尺寸加载后切换为百分比定位，
-     * 使任意容器尺寸（colCount/流式布局/窗口缩放）下都精确显示对应裁剪区
-     * 百分比公式：size = SW/cw×100% SH/ch×100%；position = x/(SW-cw)×100% y/(SH-ch)×100%
-     * 缩略图网格与大图阅读占位共用此函数
-     * @param {HTMLElement} el - 背景承载元素（网格imgwrap或大图img）
+     * 雪碧图直显（路线A 新版，1.7.0）：固定内框 + transform scale
+     * 在外层容器里插入一个固定 cw×ch 的 inner，px 定位在这个固定框里本来就精确；
+     * 外层格子尺寸由布局决定后，用 scale(outerW/cw) 把 inner 整体缩放到填满外层。
+     * 完全不需要雪碧图完整尺寸 SW/SH：雪碧图慢加载时只是空白，加载完自动正确，
+     * 不存在旧方案超时判死、位置永不纠正的问题。
+     * @param {HTMLElement} outer - 外层容器（网格 imgwrap，已由布局定好尺寸、overflow:hidden）
      * @param {{url:string, positions:Array<{x:number,y:number,w:number,h:number}>, groupIndex:number}} sprite - 雪碧图信息
      */
-    function applySpriteBackground(el, sprite) {
+    function applySpriteScaled(outer, sprite) {
         const rect = sprite.positions[sprite.groupIndex] || { x: 0, y: 0, w: 100, h: 100 };
-        el.style.backgroundImage = `url("${sprite.url}")`;
-        el.style.backgroundRepeat = "no-repeat";
-        // 初始：原始尺寸 + px 定位（尺寸信息未加载时也能先显示裁剪区）
-        el.style.backgroundPosition = `${-rect.x}px ${-rect.y}px`;
-        SpriteSplitter.getSpriteSize(sprite.url).then(size => {
-            if (!size || !el.isConnected) return;
-            const { w: SW, h: SH } = size;
-            const { x, y, w: cw, h: ch } = rect;
-            if (!(SW > 0 && SH > 0 && cw > 0 && ch > 0)) return;
-            // 百分比定位：相对容器，任何容器尺寸下裁剪区都精确填满
-            el.style.backgroundSize = `${(SW / cw * 100).toFixed(4)}% ${(SH / ch * 100).toFixed(4)}%`;
-            const px = (SW - cw > 0) ? `${(x / (SW - cw) * 100).toFixed(4)}%` : "0px";
-            const py = (SH - ch > 0) ? `${(y / (SH - ch) * 100).toFixed(4)}%` : "0px";
-            el.style.backgroundPosition = `${px} ${py}`;
-        }).catch(e => {
-            log("warn", `getSpriteSize failed for ${sprite.url}:`, e);
-        });
+        let inner = outer.querySelector(":scope > .ehv-sprite-inner");
+        if (!inner) {
+            inner = document.createElement("div");
+            inner.className = "ehv-sprite-inner";
+            outer.appendChild(inner);
+        }
+        inner.style.width = rect.w + "px";
+        inner.style.height = rect.h + "px";
+        inner.style.backgroundImage = `url("${sprite.url}")`;
+        inner.style.backgroundRepeat = "no-repeat";
+        // background-size 默认 auto：按雪碧图原始像素绘制，固定 cw×ch 框里 px 定位即精确
+        inner.style.backgroundPosition = `${-rect.x}px ${-rect.y}px`;
+        inner.dataset.cw = rect.w;
+        // 外层此刻可能还没布局完（宽度 0），真正的 scale 由布局完成后调用 applySpriteScale 写入
+        applySpriteScale(outer);
     }
 
+    /**
+     * 按外层容器实际宽度，给 inner 写 transform: scale(outerW/cw)。
+     * 布局计算完成、列数变化、窗口 resize 后调用。
+     * @param {HTMLElement} outer - 外层容器（imgwrap）
+     */
+    function applySpriteScale(outer) {
+        const inner = outer.querySelector(":scope > .ehv-sprite-inner");
+        if (!inner) return;
+        const cw = parseFloat(inner.dataset.cw) || 0;
+        if (cw <= 0) return;
+        const outerW = outer.getBoundingClientRect().width;
+        if (outerW <= 0) return;
+        inner.style.transformOrigin = "top left";
+        inner.style.transform = `scale(${outerW / cw})`;
+    }
     /**
      * 清理文件名中的非法字符
      * @param {string} name - 原始文件名
@@ -728,8 +742,6 @@
         // ===== 路线A：懒拆分与尺寸缓存 =====
         /** @type {Map<string, Promise<string[]>>} 雪碧图URL -> 整组拆分结果的Promise（懒拆分缓存，同一URL只下载/编码一次） */
         static groupCache = new Map();
-        /** @type {Map<string, Promise<{w:number,h:number}|null>>} 雪碧图URL -> 真实尺寸Promise（一次Image加载，浏览器缓存命中） */
-        static sizeCache = new Map();
 
         /**
          * 懒拆分：获取某个裁剪区对应的独立缩略图URL
@@ -750,32 +762,6 @@
             return p.then(results => results[sprite.groupIndex] || sprite.url);
         }
 
-        /**
-         * 获取雪碧图真实尺寸（一次 Image 加载，浏览器缓存命中；不做 canvas、不编码）
-         * @param {string} url - 雪碧图URL
-         * @returns {Promise<{w:number,h:number}|null>} 失败或超时返回 null
-         */
-        static getSpriteSize(url) {
-            if (!SpriteSplitter.sizeCache.has(url)) {
-                const p = new Promise((resolve) => {
-                    const img = new Image();
-                    const timer = setTimeout(() => {
-                        resolve(null);
-                    }, 10000);
-                    img.onload = () => {
-                        clearTimeout(timer);
-                        resolve({ w: img.naturalWidth, h: img.naturalHeight });
-                    };
-                    img.onerror = () => {
-                        clearTimeout(timer);
-                        resolve(null);
-                    };
-                    img.src = url;
-                });
-                SpriteSplitter.sizeCache.set(url, p);
-            }
-            return SpriteSplitter.sizeCache.get(url);
-        }
     }
 
     // ============================================================================
@@ -1922,10 +1908,24 @@
                 this._layoutTimer = null;
                 if (this.config.get("enableFlowVision")) {
                     this._layoutJustifiedRows();
+                    // Justified 布局里已直接用格子宽写过 scale，无需再遍历读 DOM
+                } else {
+                    // 固定网格模式：grid 列宽由 CSS 均分，需读实际宽度写 scale
+                    this._applyAllSpriteScales();
                 }
             }, 80);
         }
 
+
+        /**
+         * 遍历所有缩略图格子，重算雪碧图内框 transform scale（固定网格模式 resize / 列数切换后用）
+         */
+        _applyAllSpriteScales() {
+            if (!this.gridEl) return;
+            this.gridEl.querySelectorAll(".ehv-thumb-item").forEach(item => {
+                applySpriteScale(item.querySelector(".ehv-thumb-imgwrap"));
+            });
+        }
         /**
          * 设置滚动观察器，实现懒加载和无限滚动
          */
@@ -2024,11 +2024,10 @@
                 img.src = node.thumbnailImage;
                 imgWrap.appendChild(img);
             } else if (node.sprite) {
-                // 雪碧图直显（路线A）：CSS 背景定位显示对应裁剪区，不做 canvas 拆分
-                // 百分比 background-size/position 相对容器，colCount/流式布局/窗口缩放自动正确
-                // 注意：雪碧图节点不再创建 img 元素——无 src 的空 img 会被浏览器渲染成
-                // "破图占位框 + alt 文字"显示在缩略图左上角；背景直接画在 imgWrap 上
-                applySpriteBackground(imgWrap, node.sprite);
+
+                // 雪碧图直显（路线A 新版，1.7.0）：固定 cw×ch 内框 + px 定位 + transform scale
+                // 不需要雪碧图完整尺寸，慢加载时位置天然正确（图未加载完只是空白）
+                applySpriteScaled(imgWrap, node.sprite);
             } else {
             }
 
@@ -2140,6 +2139,13 @@
                 this.gridEl.style.gap = "4px";
                 // 清除自适应模式下设置的固定尺寸，恢复 item 默认行为
                 const items = this.gridEl.querySelectorAll(".ehv-thumb-item");
+                // 1.7.0：grid 列宽由 CSS 均分，下一帧布局完成后读实际宽度写 scale
+                requestAnimationFrame(() => {
+                    if (!this.gridEl) return;
+                    this.gridEl.querySelectorAll(".ehv-thumb-item").forEach(item => {
+                        applySpriteScale(item.querySelector(".ehv-thumb-imgwrap"));
+                    });
+                });
                 items.forEach(item => {
                     item.style.width = "";
                     item.style.height = "";
@@ -2260,6 +2266,15 @@
                     item.style.height = `${h}px`;
                     item.style.flex = "none";
                     item.style.aspectRatio = "auto";
+                    // 1.7.1：直接用刚算好的格子宽写 scale，不读 DOM（避免 getBoundingClientRect 强制 reflow）
+                    const inner = item.querySelector(".ehv-sprite-inner");
+                    if (inner) {
+                        const cw = parseFloat(inner.dataset.cw) || 0;
+                        if (cw > 0) {
+                            inner.style.transformOrigin = "top left";
+                            inner.style.transform = `scale(${widths[i] / cw})`;
+                        }
+                    }
                 }
             }
         }
@@ -2455,7 +2470,28 @@
             this.overlay.appendChild(this.nextBtn);
 
             document.body.appendChild(this.overlay);
+
+
+
+
+
+            // 浏览器窗口缩放：只重算inner scale，滚动位置交给浏览器原生scroll-anchoring
+            this._resizeRafPending = false;
+            this._onResize = () => {
+                if (!this.overlay || !this.overlay.isConnected) return;
+                if (this._resizeRafPending) return;
+                this._resizeRafPending = true;
+                requestAnimationFrame(() => {
+                    this._resizeRafPending = false;
+                    this.itemMap.forEach(w => this._applyItemScale(w));
+                    if (this.config.get("readMode") === "pagination") {
+                        this._updatePaginationAlignment();
+                    }
+                });
+            };
+            window.addEventListener("resize", this._onResize);
         }
+
 
         /**
          * 绑定全局事件
@@ -2633,9 +2669,13 @@
                 }
             }
 
-            // 清空内容区
-            this.imageContent.innerHTML = "";
-            this.itemMap.clear();
+            // 切换阅读模式时复用已有 wrapper，仅新画廊/初次打开才清空重建
+            const _modeQueue = this.pageFetcher.queue;
+            const _modeReuse = this._builtForQueue === _modeQueue;
+            if (!_modeReuse) {
+                this.imageContent.innerHTML = "";
+                this.itemMap.clear();
+            }
             // 重置翻页模式的平移偏移（避免影响其他模式）
             this.imageContent.style.transform = "";
             this.imageContent.style.alignItems = "";
@@ -2663,6 +2703,8 @@
                 this.scrollContainer.style.overflowX = "hidden";
                 this.scrollContainer.style.overflowY = "auto";
             }
+            // 横向模式原生scroll-anchoring不可靠，一直设none由脚本手动管理；连续/翻页用auto
+            this.scrollContainer.style.overflowAnchor = (mode === "horizontal") ? "none" : "";
 
             // 翻页模式显示导航按钮
             this.prevBtn.style.display = mode === "pagination" ? "flex" : "none";
@@ -2675,11 +2717,30 @@
                 this.imageContent.classList.remove("ehv-pagination-mode");
             }
 
-            // 渲染所有图片
-            const queue = this.pageFetcher.queue;
-            for (let i = 0; i < queue.length; i++) {
-                this._createImageItem(i);
+            // 渲染所有图片（新画廊全量建；切换模式复用已有 wrapper，只按新模式重算尺寸）
+            if (!_modeReuse) {
+                for (let i = 0; i < _modeQueue.length; i++) {
+                    this._createImageItem(i);
+                }
+                this._builtForQueue = _modeQueue;
+            } else {
+                this.imageContent.style.display = "none";
+                this.itemMap.forEach(w => {
+                    w.style.display = "";
+                    w.style.flexShrink = "";
+                    w.style.width = "";
+                    w.style.height = "";
+                    const _img = w.querySelector(".ehv-big-img");
+                    if (_img) _img.style.objectFit = "";
+                    this._applyItemScale(w);
+                });
+                this.imageContent.style.display = "";
+                // display恢复后rAF重算一次inner scale（forEach时display:none，img.offsetWidth=0走了fallback）
+                requestAnimationFrame(() => {
+                    this.itemMap.forEach(w => this._applyItemScale(w));
+                });
             }
+
 
             // 跳转到当前索引
             if (mode === "pagination") {
@@ -2736,13 +2797,10 @@
                     delete img.dataset.placeholder;
                     return;
                 }
-                // 清除占位阶段设置的宽高比约束，让 _applyItemScale 按真实图片比例计算盒子
-                img.style.aspectRatio = "";
-                this._applyItemScale(wrapper);
-                // 图片加载后重新判断对齐方式（内容大小可能变化）
-                if (this.config.get("readMode") === "pagination") {
-                    requestAnimationFrame(() => this._updatePaginationAlignment());
-                }
+                // 方式1：保持占位阶段盒子尺寸不重新算，避免占位→加载因比例细微差异导致位移
+                // 大图解码完再移除雪碧图占位inner，避免设src到load之间短暂空白闪烁
+                const _inner = wrapper.querySelector(":scope > .ehv-big-sprite-inner");
+                if (_inner) _inner.remove();
             });
 
             // 右上角进度百分比
@@ -2783,11 +2841,11 @@
             this.imageContent.appendChild(wrapper);
             this.itemMap.set(index, wrapper);
 
+            // 设置图片源（先设aspectRatio/width，再应用scale，否则inner scale算成0）
+            this._setImageSource(index, wrapper, img, progressEl);
+
             // 应用 imgScale
             this._applyItemScale(wrapper);
-
-            // 设置图片源
-            this._setImageSource(index, wrapper, img, progressEl);
 
             return wrapper;
         }
@@ -2850,7 +2908,19 @@
                 // 空 src 的 img 会被浏览器渲染成"破图占位框 + alt 文字"盖在背景上
                 img.src = TRANSPARENT_1PX_GIF;
                 img.dataset.placeholder = "1";
-                applySpriteBackground(img, fetcher.node.sprite);
+                // v1.7.9：改用 inner scaler 画雪碧图占位（和缩略图网格一致），不再依赖 getSpriteSize
+                let inner = wrapper.querySelector(":scope > .ehv-big-sprite-inner");
+                if (!inner) {
+                    inner = document.createElement("div");
+                    inner.className = "ehv-big-sprite-inner";
+                    wrapper.insertBefore(inner, img);
+                }
+                inner.style.width = rect.w + "px";
+                inner.style.height = rect.h + "px";
+                inner.style.backgroundImage = `url("${fetcher.node.sprite.url}")`;
+                inner.style.backgroundRepeat = "no-repeat";
+                inner.style.backgroundPosition = `${-rect.x}px ${-rect.y}px`;
+                inner.dataset.cw = rect.w;
             } else {
                 const thumbUrl = await this._getThumbUrl(fetcher);
                 if (thumbUrl) {
@@ -3082,31 +3152,12 @@
                 img.style.maxWidth = "none";
                 img.style.maxHeight = "none";
 
-                if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-                    const imgRatio = img.naturalWidth / img.naturalHeight;
-                    let imgBaseWidth, imgBaseHeight;
-                    if (imgRatio > baseRatio) {
-                        // 横图：100%时宽度填满可用区域
-                        imgBaseWidth = baseWidth;
-                        imgBaseHeight = baseWidth / imgRatio;
-                    } else {
-                        // 竖图：100%时高度填满可用区域
-                        imgBaseHeight = baseHeight;
-                        imgBaseWidth = baseHeight * imgRatio;
-                    }
-                    // 放大时按比例放大（可能超出视口，通过平移查看）
-                    img.style.width = (imgBaseWidth * scaleRatio) + "px";
-                    img.style.height = (imgBaseHeight * scaleRatio) + "px";
-                } else {
-                    // 图片未加载，先用auto，等加载后重新应用
-                    img.style.width = "auto";
-                    img.style.height = "auto";
-                    // 雪碧图占位阶段：img 有宽高比约束但无内在尺寸，给兜底高度避免盒子塌陷成条状
-                    // （宽度由 aspect-ratio 自动推导，加载后由上面的分支重新计算）
-                    if (img.style.aspectRatio) {
-                        img.style.height = (baseHeight * scaleRatio) + "px";
-                    }
-                }
+                // v1.7.17:加载前后统一一律height=baseHeight填满高度，width按比例推，不区分横图竖图
+                const _ratio = (img.src.startsWith("blob:") && img.naturalWidth > 0 && img.naturalHeight > 0)
+                    ? img.naturalWidth / img.naturalHeight
+                    : (() => { const m = (img.style.aspectRatio || "").match(/([\d.]+)\s*\/\s*([\d.]+)/); return m ? parseFloat(m[1]) / parseFloat(m[2]) : 1; })();
+                img.style.height = (baseHeight * scaleRatio) + "px";
+                img.style.width = (baseHeight * scaleRatio * _ratio) + "px";
 
                 // wrapper尺寸跟随图片（不固定宽高）
                 wrapper.style.width = "auto";
@@ -3128,6 +3179,34 @@
                 img.style.maxWidth = "none";
                 img.style.height = "auto";
                 img.style.maxHeight = "none";
+            }
+
+            // v1.7.9：inner scaler 占位，按 img 实际宽度写 inner transform scale
+            const _inner = wrapper.querySelector(":scope > .ehv-big-sprite-inner");
+            if (_inner) {
+                const _cw = parseFloat(_inner.dataset.cw) || 0;
+                const _ch = parseFloat(_inner.style.height) || 0;
+                if (_cw > 0 && _ch > 0) {
+                    let imgW;
+                    if (mode === "pagination") {
+                        const wPx = parseFloat(img.style.width);
+                        if (wPx > 0) {
+                            imgW = wPx;
+                        } else {
+                            const hPx = parseFloat(img.style.height) || 0;
+                            imgW = hPx * _cw / _ch;
+                        }
+                    } else if (mode === "horizontal") {
+                        // 横向模式：img高度=scale vh，宽度=高度*cw/ch，不用读offsetWidth
+                        imgW = (window.innerHeight * scale / 100) * _cw / _ch;
+                    } else {
+                        // 连续模式：wrapper宽度=滚动容器clientWidth(stretch)，img宽度=clientWidth*scale/100，不用逐个读offsetWidth
+                        const cw = this.scrollContainer ? this.scrollContainer.clientWidth : window.innerWidth;
+                        imgW = cw * scale / 100;
+                    }
+                    _inner.style.transformOrigin = "center";
+                    _inner.style.transform = `translate(-50%, -50%) scale(${imgW / _cw})`;
+                }
             }
         }
 
@@ -3168,7 +3247,7 @@
             container.style.scrollBehavior = 'auto';
             container.style.overflowAnchor = 'none';
 
-            // 应用缩放到所有图片
+            // 应用缩放到所有图片（v1.7.30起inner scale用clientWidth算，无需预读offsetWidth）
             this.itemMap.forEach(wrapper => this._applyItemScale(wrapper));
 
             // 以视口左上角为固定点，按缩放比例同步调整滚动位置
@@ -3318,7 +3397,13 @@
             this._targetOffsetY = 0;
             this.imageContent.style.transform = "translate(0, 0)";
             // 延迟更新对齐方式（等待布局完成）
-            requestAnimationFrame(() => this._updatePaginationAlignment());
+            requestAnimationFrame(() => {
+                // 翻页后对新显示的wrapper重算尺寸和inner scale（初次建时display:none算成0）
+                this.itemMap.forEach((wrapper, i) => {
+                    if (i >= pageStart && i < pageEnd) this._applyItemScale(wrapper);
+                });
+                this._updatePaginationAlignment();
+            });
         }
 
         /**
@@ -4463,6 +4548,16 @@
     display: block;
 }
 
+/* 1.7.0 雪碧图直显内框：固定 cw×ch，px 定位，外层 transform scale 缩放 */
+.ehv-sprite-inner {
+    position: absolute;
+    top: 0;
+    left: 0;
+    background-repeat: no-repeat;
+    transform-origin: top left;
+    flex: none;
+}
+
 .ehv-thumb-pagelabel {
     position: absolute;
     bottom: 2px;
@@ -4563,6 +4658,7 @@
     position: relative;
     scroll-behavior: smooth;
     min-height: 0;
+    overflow-anchor: auto;
 }
 
 .ehv-big-imagecontent {
@@ -4592,6 +4688,18 @@
     max-width: 100vw;
     object-fit: contain;
     display: block;
+    position: relative;
+    z-index: 1;
+}
+
+/* v1.7.9：大图占位雪碧图固定内框（和缩略图网格一致），absolute 定位在 wrapper 左上，scale 由 JS 写 */
+.ehv-big-sprite-inner {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform-origin: center;
+    pointer-events: none;
+    z-index: 0;
 }
 
 /* 占位缩略图和大图使用相同尺寸，无半透明模糊效果 */
@@ -4990,7 +5098,7 @@
             }
 
             log("info", "EH Viewer Rebuild initialized successfully");
-            this.bus.emit("notify", "success", "EH阅读器已加载，点击左下角🎑按钮开始");
+            this.bus.emit("notify", "success", `EH阅读器 v${EHV_SCRIPT_VERSION} 已加载，点击左下角🎑按钮开始`);
         }
 
         /**
