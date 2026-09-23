@@ -2,7 +2,7 @@
 // @name         EH Viewer Rebuild
 // @name:zh-CN   EH站阅读器重构版
 // @namespace    ehentai
-// @version      1.9.00
+// @version      1.10.04
 // @author       Rebuild from Comic Looms
 // @description  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
 // @description:zh-CN  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
@@ -18,7 +18,7 @@
 // @run-at       document-end
 // ==/UserScript==
 // 脚本版本号常量，每次版本更新时需同步更新此处和头部@version
-const EHV_SCRIPT_VERSION = "1.9.00";
+const EHV_SCRIPT_VERSION = "1.10.04";
 //1.6.4 refactor:EH Viewer缩略图显示重构 从拆分雪碧图到Css控制
 //1.6.5 feat:实现autoLoad（自动加载） autoLoadInBackground（后台保持加载）设置功能
 //1.6.6 fix:重新设计大图界面autoLoad表现
@@ -27,6 +27,11 @@ const EHV_SCRIPT_VERSION = "1.9.00";
 //1.6.10 fix:_loadAll()先进先出加载队列改为open()高优先级插队
 //1.8.00 refactor:缩略图与大图界面雪碧图直显改为固定内框+transform scale，不再依赖雪碧图完整尺寸(getSpriteSize)，修复慢加载时位置错位以及出现的一系列问题
 //1.9.00 fix: 修复横向模式浏览器缩放/还原时的滚动跳变（改为锚定视口中心图恢复），并优化缩放与滚动停止的耗时（增量重算未加载占位 inner、二分定位视口中心图、inner 引用缓存）
+//1.10.00 feat: 缩略图自适应布局支持长图跨行（行首长图自动跨2~3行显示，不再被压成细条），布局改为JS绝对定位精确排版，跨行图完整显示不被裁切
+//1.10.01 feat: 缩略图布局支持横超长图（宽高比≥2.0）所在行自动减少一张图，横超长图占更宽（跨更多列）、行高更高显示更大
+//1.10.02 feat: 跨行图较宽（≥25%容器宽）时，跨行带与被跨越行自动各减少一张图，避免挤压同行图片
+//1.10.03 feat: 设置新增"跨行跨列布局"开关（默认开启，提示可能出现空白）；关闭后跨行/跨列/减图全部停用，退回纯等高行布局（与早期版本一致）
+//1.10.04 feat: 控制栏新增"每行缩略图数量 -/+"快捷调节按钮，设置面板数值同步更新
 //待解决bug
 //Retry with nl value:  不知道是哪个图片触发的
 //自动加载队列及优先级实现方式有些复杂，感觉可以重构
@@ -117,6 +122,7 @@ const EHV_SCRIPT_VERSION = "1.9.00";
         colCount: 5,              // 缩略图每行数量
         rowHeight: 200,           // 自适应布局每行参考高度
         enableFlowVision: false,  // 启用自适应视图布局
+        enableSpanLayout: true,   // 跨行跨列布局（长图跨行/横图跨列放大显示，可能出现空白；关闭则与早期版本一致）
         hdThumbnails: false,      // 高清缩略图（从大图重采样）
         autoExpandAllPages: false, // 缩略图模式自动展开全部页数（true：一次性加载所有分页；false：滚动到底部再加载）
 
@@ -1872,7 +1878,7 @@ const EHV_SCRIPT_VERSION = "1.9.00";
 
             // 配置变更时重新布局
             this.bus.subscribe("config-changed", (key) => {
-                if (key === "colCount" || key === "enableFlowVision" || key === "rowHeight") {
+                if (key === "colCount" || key === "enableFlowVision" || key === "rowHeight" || key === "enableSpanLayout") {
                     this._applyLayout();
                 }
                 // 开启"自动展开全部页数"时立即加载剩余分页
@@ -2124,11 +2130,13 @@ const EHV_SCRIPT_VERSION = "1.9.00";
         _applyLayout() {
             const colCount = this.config.get("colCount") || 5;
             if (this.config.get("enableFlowVision")) {
-                // 等高自适应行布局：flex + JS 动态计算每张图尺寸
-                this.gridEl.style.display = "flex";
-                this.gridEl.style.flexWrap = "wrap";
-                this.gridEl.style.gap = "4px";
-                this.gridEl.style.alignItems = "flex-start";
+                // 等高自适应行布局（1.10.00 起支持长图跨行）：
+                // 改用 JS 绝对定位精确排版（position:relative + left/top/width/height），
+                // 跨行图可以纵向覆盖后续行，flex 换行做不到这一点
+                this.gridEl.style.display = "block";
+                this.gridEl.style.position = "relative";
+                this.gridEl.style.gap = "";
+                this.gridEl.style.alignItems = "";
                 // 清除 grid 模式下可能残留的列模板
                 this.gridEl.style.gridTemplateColumns = "";
                 // 立即计算一次布局
@@ -2136,9 +2144,11 @@ const EHV_SCRIPT_VERSION = "1.9.00";
             } else {
                 // 固定列数网格
                 this.gridEl.style.display = "grid";
+                this.gridEl.style.position = "";
+                this.gridEl.style.height = "";
                 this.gridEl.style.gridTemplateColumns = `repeat(${colCount}, 1fr)`;
                 this.gridEl.style.gap = "4px";
-                // 清除自适应模式下设置的固定尺寸，恢复 item 默认行为
+                // 清除自适应模式下设置的固定尺寸与绝对定位，恢复 item 默认行为
                 const items = this.gridEl.querySelectorAll(".ehv-thumb-item");
                 // 1.7.0：grid 列宽由 CSS 均分，下一帧布局完成后读实际宽度写 scale
                 requestAnimationFrame(() => {
@@ -2151,6 +2161,10 @@ const EHV_SCRIPT_VERSION = "1.9.00";
                     item.style.width = "";
                     item.style.height = "";
                     item.style.flex = "";
+                    item.style.position = "";
+                    item.style.left = "";
+                    item.style.top = "";
+                    item.classList.remove("ehv-span");
                     // 恢复固定宽高比
                     const ratio = parseFloat(item.dataset.ratio || "0.75");
                     item.style.aspectRatio = `${ratio}`;
@@ -2159,15 +2173,35 @@ const EHV_SCRIPT_VERSION = "1.9.00";
         }
 
         /**
-         * 等高自适应行布局计算（Justified Gallery 算法）
+         * 等高自适应行布局计算（Justified Gallery 算法）+ 长图跨行（Span）
          *
-         * 核心原理：
+         * 核心原理（普通行，与 1.9.00 一致）：
          * 1. 按每行 colCount 张图片分组
          * 2. 计算该行所有图片的宽高比之和 sumRatio = Σ(w_i/h_i)
          * 3. 行高 = (容器宽度 - (N-1)*gap) / sumRatio
          * 4. 每张图宽度 = 行高 × 该图宽高比
          * 5. 最后一张图宽度微调以占满整行（消除浮点误差）
          * 6. 最后一行不足 colCount 张时，不拉伸，参考上一行行高，左对齐
+         *
+         * 长图跨行（1.10.00 新增）：
+         * - 某行第一张图按行高算出的宽度 < minWidth（会被压成细条）时，判定为长图；
+         * - 长图位于行中时自动提升到行首（行内其余图片相对顺序不变），保证每行长图都能跨行；
+         * - 该图改为放在行首左侧、纵向跨 2~3 行（span 列），宽度 = 跨行总高 × 宽高比；
+         * - 本行其余 colCount-1 张、以及被跨越的各行图片，都在右侧按等高算法填充剩余宽度；
+         * - 布局整体改用绝对定位（容器 position:relative + 显式高度），跨行图自然覆盖后续行。
+         *
+         * 横超长图加大（1.10.01 新增）：
+         * - 整行内存在宽高比 >= wideRatioTh（默认 2.0）的横超长图（如超长横图/全景图）时，
+         *   本行自动减少一张非横超长图（顺延到下一带），使横超长图占更宽（跨更多列）、行高更高。
+         *
+         * 跨行同行减图（1.10.02 新增）：
+         * - 跨行图宽度 >= 容器宽度 × spanWideTh（默认 0.25）时，说明跨行图挤压了同行图片，
+         *   跨行带（本带）与被跨越的每一行自动各减少一张非横超长图（顺延到下一带），
+         *   让同行图片恢复更大显示。
+         *
+         * 跨行跨列总开关（1.10.03 新增）：
+         * - 设置项 enableSpanLayout（默认开启）：关闭后跳过全部跨行/横图减行/跨行减图逻辑，
+         *   退回纯等高行布局（与早期版本一致，每行固定 colCount 张，末尾行不足时左对齐）。
          */
         _layoutJustifiedRows() {
             if (!this.gridEl || !this.gridEl.children.length) return;
@@ -2175,6 +2209,8 @@ const EHV_SCRIPT_VERSION = "1.9.00";
 
             const colCount = Math.max(1, this.config.get("colCount") || 5);
             const gap = 4; // 与 CSS gap 一致
+            // 1.10.03 跨行跨列总开关：关闭时跳过全部跨行/减图逻辑，退回纯等高行布局
+            const spanEnabled = !!this.config.get("enableSpanLayout");
             // 用 getBoundingClientRect 获取精确宽度（比 clientWidth 更可靠）
             const containerWidth = Math.round(this.gridEl.getBoundingClientRect().width);
             if (containerWidth <= 0) return;
@@ -2182,102 +2218,287 @@ const EHV_SCRIPT_VERSION = "1.9.00";
             const items = Array.from(this.gridEl.children);
             const total = items.length;
 
+            // ===== 长图跨行参数 =====
+            // 最小缩略图宽度：某张图按行高算出的宽度低于它，即视为"被压扁的长图"，改为跨行显示
+            const minWidth = Math.max(80, Math.min(220, Math.round(containerWidth / colCount * 0.6))); // 0.6（用户配置）：更多竖长图触发跨行
+            // 跨行图最大宽度（占容器比例），避免过度挤压同行其余图片
+            const maxSpanWidth = Math.round(containerWidth * 0.5);
+            // 长图最多跨越的行数
+            const maxSpanRows = 3;
+            // 1.10.01 横超长判定：宽高比 >= 该值时视为"横超长图"（如超长横图/全景图），
+            // 所在行自动减少一张非横图，让横超长图占更宽显示（可调）
+            const wideRatioTh = 2.0;
+            // 1.10.02 跨行同行减图阈值：跨行图宽度 >= 容器宽度 × 该值时，
+            // 跨行带与被跨越行自动各减少一张图，避免挤压同行图片（可调）
+            const spanWideTh = 0.25;
+
+            const getRatio = (item) => {
+                const r = parseFloat(item.dataset.ratio || "0.75");
+                return (r > 0 && isFinite(r)) ? r : 0.75;
+            };
+
+            /**
+             * 计算一行内各图宽度（等高 + 占满/左对齐）
+             * @param {HTMLElement[]} rowItems - 该行的图片元素
+             * @param {number} availW - 该行可用总宽度（不含 gap）
+             * @param {boolean} fill - 是否占满整行
+             * @param {number} refH - 不占满时的参考行高（<=0 表示忽略）
+             * @returns {{widths:number[], h:number, rowH:number}|null}
+             */
+            const justifyRow = (rowItems, availW, fill, refH) => {
+                const n = rowItems.length;
+                if (n <= 0 || availW <= 0) return null;
+                const ratios = rowItems.map(getRatio);
+                const sumRatio = ratios.reduce((a, b) => a + b, 0);
+                if (sumRatio <= 0) return null;
+                let rowH;
+                if (!fill && refH > 0) {
+                    // 不占满：先按参考行高，若总宽超过可用宽度则收缩占满
+                    const totalW = ratios.reduce((s, r) => s + refH * r, 0);
+                    rowH = totalW <= availW ? refH : availW / sumRatio;
+                } else {
+                    rowH = availW / sumRatio;
+                }
+                const widths = new Array(n);
+                let intTotal = 0;
+                // 前 n-1 张先取整
+                for (let i = 0; i < n - 1; i++) {
+                    const w = Math.max(1, Math.round(rowH * ratios[i]));
+                    widths[i] = w;
+                    intTotal += w;
+                }
+                // 最后一张：占满剩余宽度（消除所有取整误差）
+                if (fill) {
+                    widths[n - 1] = Math.max(1, availW - intTotal);
+                } else {
+                    widths[n - 1] = Math.max(1, Math.round(rowH * ratios[n - 1]));
+                }
+                return { widths, h: Math.max(1, Math.round(rowH)), rowH };
+            };
+
+            /**
+             * 设置单个格子的绝对定位尺寸与雪碧图 scale
+             */
+            const placeItem = (item, x, y, w, h, isSpan) => {
+                item.style.position = "absolute";
+                item.style.left = x + "px";
+                item.style.top = y + "px";
+                item.style.width = w + "px";
+                item.style.height = h + "px";
+                item.style.flex = "none";
+                item.style.aspectRatio = "auto";
+                if (isSpan) {
+                    item.classList.add("ehv-span");
+                } else {
+                    item.classList.remove("ehv-span");
+                }
+                // 1.7.1：直接用刚算好的格子宽写 scale，不读 DOM（避免 getBoundingClientRect 强制 reflow）
+                const inner = item.querySelector(".ehv-sprite-inner");
+                if (inner) {
+                    const cw = parseFloat(inner.dataset.cw) || 0;
+                    if (cw > 0) {
+                        inner.style.transformOrigin = "top left";
+                        inner.style.transform = `scale(${w / cw})`;
+                    }
+                }
+            };
+
             // 重置上一次行高记录
             this._lastRowHeight = 0;
 
             let debugRow = 0;
+            // 绝对定位排版：cursorY 为当前"带"（行）的顶边，pos 为下一个待排版图片下标
+            let cursorY = 0;
+            let pos = 0;
+            // 长图未被后续行完全覆盖时（末尾无足够图片），记录其底部用于容器高度
+            let maxSpanBottom = 0;
 
-            // 按行分组处理
-            for (let rowStart = 0; rowStart < total; rowStart += colCount) {
-                const rowEnd = Math.min(rowStart + colCount, total);
-                const rowItems = items.slice(rowStart, rowEnd);
-                const n = rowItems.length;
-                const isLastRow = (rowEnd >= total);
-                debugRow++;
+            // 按带（行）分组处理
+            while (pos < total) {
+                const bandEnd = Math.min(pos + colCount, total);
+                const bandItems = items.slice(pos, bandEnd);
+                let n = bandItems.length;
+                let isLastBand = (bandEnd >= total);
 
-                // 收集该行每张图的宽高比
-                const ratios = rowItems.map(item => {
-                    const r = parseFloat(item.dataset.ratio || "0.75");
-                    return (r > 0 && isFinite(r)) ? r : 0.75;
-                });
-
-                // 该行宽高比之和
-                const sumRatio = ratios.reduce((a, b) => a + b, 0);
-                if (sumRatio <= 0) continue;
-
-                // 可用宽度 = 容器宽度 - gap*(N-1)
-                const availableWidth = containerWidth - (n - 1) * gap;
-
-                let rowHeight;
-                let shouldFillRow = false; // 是否需要占满整行
-
-                if (isLastRow && n < colCount) {
-                    // 最后一行不足：先按上一行行高计算
-                    rowHeight = this._lastRowHeight > 0
-                        ? this._lastRowHeight
-                        : (availableWidth / sumRatio);
-                    // 检查按此行高计算的总宽度是否超过容器
-                    const totalW = ratios.reduce((s, r) => s + rowHeight * r, 0);
-                    if (totalW <= availableWidth) {
-                        // 不超过，左对齐，不占满
-                        shouldFillRow = false;
-                    } else {
-                        // 超过了，需要缩小行高以适应容器，并占满整行
-                        rowHeight = availableWidth / sumRatio;
-                        shouldFillRow = true;
+                // 1.10.01 横超长缩减：整行内存在宽高比 >= wideRatioTh 的横超长图时，
+                // 本带减少一张"非横超长"图（从带尾向前剔除），被剔除的图移到本带窗口
+                // 之后（顺延到下一带），使横超长图占更宽（跨更多列）、行高更高，显示更大
+                if (spanEnabled && n === colCount) {
+                    const wideIdx = bandItems.findIndex(it => getRatio(it) >= wideRatioTh);
+                    if (wideIdx >= 0) {
+                        let cut = false;
+                        for (let i = bandItems.length - 1; i >= 0; i--) {
+                            if (getRatio(bandItems[i]) < wideRatioTh) {
+                                const removed = bandItems.splice(i, 1)[0];
+                                // items 是本函数内的副本数组，可安全重排：
+                                // 从原数组移除该图，并插入到本带窗口末尾之后（下一带首图位置）
+                                const itemIdx = items.indexOf(removed);
+                                items.splice(itemIdx, 1);
+                                items.splice(pos + colCount - 1, 0, removed);
+                                cut = true;
+                                break;
+                            }
+                        }
+                        n = bandItems.length;
+                        isLastBand = (pos + n >= total);
+                        if (cut) console.log(`[EHViewer-Layout] band@${pos}: WIDE-CUT 横超长图占比过大，本行由 ${colCount} 张减少为 ${n} 张（wideRatioTh=${wideRatioTh}）`);
                     }
-                } else {
-                    // 完整行：行高 = 可用宽度 / 宽高比之和，占满整行
-                    rowHeight = availableWidth / sumRatio;
-                    this._lastRowHeight = rowHeight;
-                    shouldFillRow = true;
                 }
 
-                // ===== 精确计算每张图宽度，确保取整后总宽度正好等于目标值 =====
-                const widths = new Array(n);
-                let intTotal = 0;
+                // 预计算"该带作为普通等高行"的行高（含首图），用于长图判定
+                let firstRatio = getRatio(bandItems[0]);
+                const sumRatio0 = bandItems.reduce((s, it) => s + getRatio(it), 0);
+                const availW0 = containerWidth - (n - 1) * gap;
+                const h0 = sumRatio0 > 0 ? availW0 / sumRatio0 : 0;
+                let firstW = h0 * firstRatio;
 
-                // 前 n-1 张先取整
-                for (let i = 0; i < n - 1; i++) {
-                    const w = Math.max(1, Math.round(rowHeight * ratios[i]));
-                    widths[i] = w;
-                    intTotal += w;
+                // 长图提升：若长图位于行中（非行首），将其提升到行首跨行，
+                // 行内其余图片保持原有相对顺序（页码标签会相应前移一位）
+                if (spanEnabled && firstW >= minWidth && n > 1) {
+                    const tallIdx = bandItems.findIndex((it, idx) => idx > 0 && h0 * getRatio(it) < minWidth);
+                    if (tallIdx > 0) {
+                        const tallItem = bandItems.splice(tallIdx, 1)[0];
+                        bandItems.unshift(tallItem);
+                        firstRatio = getRatio(bandItems[0]);
+                        firstW = h0 * firstRatio;
+                    }
                 }
 
-                // 最后一张：占满剩余宽度（消除所有取整误差）
-                if (shouldFillRow) {
-                    widths[n - 1] = Math.max(1, availableWidth - intTotal);
-                } else {
-                    // 不占满的行，最后一张也按比例取整
-                    widths[n - 1] = Math.max(1, Math.round(rowHeight * ratios[n - 1]));
-                }
+                // ===== 长图跨行：行首图片宽度会被压到 minWidth 以下 =====
+                if (spanEnabled && firstW > 0 && firstW < minWidth) {
+                    // 跨行数：让跨行后的宽度至少达到 minWidth，限制在 2~maxSpanRows 行
+                    let k = Math.ceil(minWidth / firstW);
+                    k = Math.max(2, Math.min(k, maxSpanRows));
+                    // 跨行总高（按估算行高 h0）与跨行宽度
+                    const spanH = k * h0 + (k - 1) * gap;
+                    let spanW = Math.round(spanH * firstRatio);
+                    spanW = Math.max(minWidth, Math.min(spanW, maxSpanWidth));
+                    const spanTop = cursorY;
 
-                const h = Math.max(1, Math.round(rowHeight));
-                const finalTotal = widths.reduce((a, b) => a + b, 0);
+                    // 1.10.02 跨行同行减图：跨行图较宽时，本带与被跨越行各减一张非横超长图
+                    const spanWide = colCount > 2 && spanW >= containerWidth * spanWideTh;
+                    if (spanWide) {
+                        for (let i = bandItems.length - 1; i >= 1; i--) {
+                            if (getRatio(bandItems[i]) < wideRatioTh) {
+                                const removed = bandItems.splice(i, 1)[0];
+                                const itemIdx = items.indexOf(removed);
+                                items.splice(itemIdx, 1);
+                                items.splice(pos + colCount - 1, 0, removed);
+                                break;
+                            }
+                        }
+                        n = bandItems.length;
+                    }
 
-                // 调试输出（只输出前3行和最后1行，避免刷屏）
-                if (debugRow <= 3 || isLastRow) {
-                    console.log(`[EHViewer-Layout] row${debugRow}: n=${n}, isLast=${isLastRow}, fill=${shouldFillRow}, containerW=${containerWidth}, availW=${availableWidth}, rowH=${rowHeight.toFixed(2)}, sumRatio=${sumRatio.toFixed(3)}, widths=[${widths.join(",")}], totalW=${finalTotal}, gapTotal=${(n - 1) * gap}, occupied=${finalTotal + (n - 1) * gap}`);
-                }
+                    debugRow++;
+                    console.log(`[EHViewer-Layout] row${debugRow}: SPAN item#${pos} ratio=${firstRatio.toFixed(3)}, h0=${h0.toFixed(1)}, k=${k}, spanW=${spanW}, spanH=${spanH.toFixed(1)}, minWidth=${minWidth}${spanWide ? `, SPAN-WIDE 本带减为 ${n} 张` : ""}`);
 
-                // 应用尺寸
-                for (let i = 0; i < n; i++) {
-                    const item = rowItems[i];
-                    item.style.width = `${widths[i]}px`;
-                    item.style.height = `${h}px`;
-                    item.style.flex = "none";
-                    item.style.aspectRatio = "auto";
-                    // 1.7.1：直接用刚算好的格子宽写 scale，不读 DOM（避免 getBoundingClientRect 强制 reflow）
-                    const inner = item.querySelector(".ehv-sprite-inner");
-                    if (inner) {
-                        const cw = parseFloat(inner.dataset.cw) || 0;
-                        if (cw > 0) {
-                            inner.style.transformOrigin = "top left";
-                            inner.style.transform = `scale(${widths[i] / cw})`;
+                    // 跨行图：占据本带行首左侧，纵向跨 k 行
+                    placeItem(bandItems[0], 0, spanTop, spanW, spanH, true);
+
+                    // 本带其余 colCount-1 张：在跨行图右侧等高填充
+                    // 可用宽度 = 容器宽 - 跨行图宽 - 跨行图与右侧的 gap - 右侧图片间的 (R-1) 个 gap
+                    const rest = bandItems.slice(1);
+                    const availW1 = containerWidth - spanW - rest.length * gap;
+                    let bandH = h0;
+                    if (rest.length > 0) {
+                        const jr = justifyRow(rest, availW1, true, 0);
+                        if (jr) {
+                            bandH = jr.h;
+                            let x = spanW + gap;
+                            for (let i = 0; i < rest.length; i++) {
+                                placeItem(rest[i], x, cursorY, jr.widths[i], jr.h, false);
+                                x += jr.widths[i] + gap;
+                            }
+                            this._lastRowHeight = jr.rowH;
                         }
                     }
+                    cursorY += bandH + gap;
+                    pos += n; // 已消费：长图 + 本带其余图片
+
+                    // 被跨越的后续 k-1 行：每行 colCount 张（跨行图较宽时减为 colCount-1 张），
+                    // 在跨行图右侧等高填充
+                    let coveredBands = 1;
+                    for (let b = 2; b <= k; b++) {
+                        if (pos >= total) break;
+                        const bEnd = Math.min(pos + colCount, total);
+                        const bItems = items.slice(pos, bEnd);
+                        let bn = bItems.length;
+                        let isLastB = (bEnd >= total);
+                        if (spanWide && bn === colCount) {
+                            for (let i = bItems.length - 1; i >= 0; i--) {
+                                if (getRatio(bItems[i]) < wideRatioTh) {
+                                    const removed = bItems.splice(i, 1)[0];
+                                    const itemIdx = items.indexOf(removed);
+                                    items.splice(itemIdx, 1);
+                                    items.splice(pos + colCount - 1, 0, removed);
+                                    break;
+                                }
+                            }
+                            bn = bItems.length;
+                            isLastB = (pos + bn >= total);
+                        }
+                        const availWB = containerWidth - spanW - bn * gap;
+                        let jrb;
+                        if (isLastB && bn < colCount) {
+                            const refH = this._lastRowHeight > 0 ? this._lastRowHeight : h0;
+                            jrb = justifyRow(bItems, availWB, false, refH);
+                        } else {
+                            jrb = justifyRow(bItems, availWB, true, 0);
+                        }
+                        debugRow++;
+                        if (jrb) {
+                            let x = spanW + gap;
+                            for (let i = 0; i < bn; i++) {
+                                placeItem(bItems[i], x, cursorY, jrb.widths[i], jrb.h, false);
+                                x += jrb.widths[i] + gap;
+                            }
+                            this._lastRowHeight = jrb.rowH;
+                            cursorY += jrb.h + gap;
+                            coveredBands++;
+                        }
+                        pos += bn;
+                    }
+
+                    // 跨行图高度修正：
+                    // - 覆盖满 k 行：正好到最后一个被跨越行的底部，避免与后续行重叠或留缝；
+                    // - 末尾没有足够后续行：保留估算高度完整显示长图，容器高度额外覆盖其底部
+                    if (coveredBands >= k) {
+                        const newSpanH = Math.max(1, Math.round((cursorY - gap) - spanTop));
+                        bandItems[0].style.height = newSpanH + "px";
+                    } else {
+                        maxSpanBottom = Math.max(maxSpanBottom, spanTop + spanH);
+                    }
+                    continue;
                 }
+
+                // ===== 普通行（与 1.9.00 算法一致）=====
+                debugRow++;
+                let jr;
+                if (isLastBand && n < colCount) {
+                    // 最后一行不足：先按上一行行高计算
+                    const refH = this._lastRowHeight > 0 ? this._lastRowHeight : h0;
+                    jr = justifyRow(bandItems, availW0, false, refH);
+                } else {
+                    jr = justifyRow(bandItems, availW0, true, 0);
+                }
+                if (jr) {
+                    let x = 0;
+                    for (let i = 0; i < n; i++) {
+                        placeItem(bandItems[i], x, cursorY, jr.widths[i], jr.h, false);
+                        x += jr.widths[i] + gap;
+                    }
+                    this._lastRowHeight = jr.rowH;
+                    cursorY += jr.h + gap;
+                } else {
+                    cursorY += h0 + gap;
+                }
+                pos += n;
             }
+
+            // 设置容器高度（绝对定位需要显式高度，否则后续加载提示/页脚会重叠）
+            const finalH = Math.max(1, Math.round(Math.max(cursorY - gap, maxSpanBottom)));
+            this.gridEl.style.height = finalH + "px";
         }
 
         /**
@@ -4160,6 +4381,18 @@ const EHV_SCRIPT_VERSION = "1.9.00";
             this._buildEHentaiSection();
             this._buildUISection();
 
+            // 1.10.04 配置被外部修改（如控制栏 -/+ 快捷调节）时，同步面板上对应控件的显示
+            this.bus.subscribe("config-changed", (key) => {
+                const item = this.panel.querySelector(`.ehv-config-item[data-key="${key}"]`);
+                if (!item) return;
+                const input = item.querySelector("input, select");
+                if (!input) return;
+                const value = this.config.get(key);
+                if (input.type === "checkbox") input.checked = !!value;
+                else if (input.type === "select-one") input.value = value;
+                else input.value = value;
+            });
+
             // 底部操作按钮
             const footer = document.createElement("div");
             footer.className = "ehv-config-footer";
@@ -4195,6 +4428,7 @@ const EHV_SCRIPT_VERSION = "1.9.00";
         _createItem(label, key, type, options = {}) {
             const item = document.createElement("div");
             item.className = "ehv-config-item";
+            item.dataset.key = key; // 1.10.04 新增：供外部（如控制栏快捷调节）同步更新面板显示
 
             const labelEl = document.createElement("label");
             labelEl.className = "ehv-config-label";
@@ -4298,6 +4532,8 @@ const EHV_SCRIPT_VERSION = "1.9.00";
                 { min: 1, max: 20, tooltip: "缩略图列表每行显示的图片数量" }));
             section.appendChild(this._createItem("启用自适应视图", "enableFlowVision", "checkbox",
                 { tooltip: "每行图片高度一致，数量自动调整，适合不规则宽高比的图片" }));
+            section.appendChild(this._createItem("跨行跨列布局（可能出现空白）", "enableSpanLayout", "checkbox",
+                { tooltip: "长图自动跨行/跨列放大显示；末尾行不足时可能出现空白，关闭则与早期版本一致" }));
             section.appendChild(this._createItem("自适应行高", "rowHeight", "number",
                 { min: 50, max: 500, tooltip: "自适应视图布局下每行的参考高度" }));
             section.appendChild(this._createItem("高清缩略图", "hdThumbnails", "checkbox",
@@ -4499,6 +4735,24 @@ const EHV_SCRIPT_VERSION = "1.9.00";
             this.configBtn.className = "ehv-bar-btn";
             this.configBtn.textContent = "⚙ 配置";
 
+            // 每行缩略图数量快捷调节（-/值/+）
+            this.colCountGroup = document.createElement("span");
+            this.colCountGroup.className = "ehv-bar-colcount";
+            this.colMinusBtn = document.createElement("button");
+            this.colMinusBtn.className = "ehv-bar-btn ehv-bar-colcount-btn";
+            this.colMinusBtn.textContent = "−";
+            this.colMinusBtn.title = "减少每行缩略图数量";
+            this.colValueEl = document.createElement("span");
+            this.colValueEl.className = "ehv-bar-colcount-val";
+            this.colValueEl.textContent = this.config.get("colCount");
+            this.colPlusBtn = document.createElement("button");
+            this.colPlusBtn.className = "ehv-bar-btn ehv-bar-colcount-btn";
+            this.colPlusBtn.textContent = "+";
+            this.colPlusBtn.title = "增加每行缩略图数量";
+            this.colCountGroup.appendChild(this.colMinusBtn);
+            this.colCountGroup.appendChild(this.colValueEl);
+            this.colCountGroup.appendChild(this.colPlusBtn);
+
             // 进度显示
             this.progressEl = document.createElement("span");
             this.progressEl.className = "ehv-bar-progress";
@@ -4507,6 +4761,7 @@ const EHV_SCRIPT_VERSION = "1.9.00";
             this.bar.appendChild(this.toggleBtn);
             this.bar.appendChild(this.downloadBtn);
             this.bar.appendChild(this.configBtn);
+            this.bar.appendChild(this.colCountGroup);
             this.bar.appendChild(this.progressEl);
 
             document.body.appendChild(this.bar);
@@ -4528,6 +4783,20 @@ const EHV_SCRIPT_VERSION = "1.9.00";
 
             this.configBtn.addEventListener("click", () => {
                 this.configPanel.toggle();
+            });
+
+            // 每行缩略图数量 -/+ 快捷调节（同步到设置面板，触发重新布局）
+            const applyColCountDelta = (delta) => {
+                const cur = parseInt(this.config.get("colCount")) || 5;
+                const next = Math.max(1, Math.min(20, cur + delta));
+                if (next !== cur) this.config.set("colCount", next);
+            };
+            this.colMinusBtn.addEventListener("click", () => applyColCountDelta(-1));
+            this.colPlusBtn.addEventListener("click", () => applyColCountDelta(1));
+
+            // 配置外部变更（如设置面板）时同步控制栏数值
+            this.bus.subscribe("config-changed", (key) => {
+                if (key === "colCount") this.colValueEl.textContent = this.config.get("colCount");
             });
 
             // 下载进度更新
@@ -4657,6 +4926,11 @@ const EHV_SCRIPT_VERSION = "1.9.00";
     height: 100%;
     object-fit: cover;
     display: block;
+}
+
+/* 1.10.00 长图跨行：跨行缩略图完整显示整张长图（不被裁切） */
+.ehv-thumb-item.ehv-span .ehv-thumb-img {
+    object-fit: contain;
 }
 
 /* 1.7.0 雪碧图直显内框：固定 cw×ch，px 定位，外层 transform scale 缩放 */
@@ -4959,6 +5233,32 @@ const EHV_SCRIPT_VERSION = "1.9.00";
     background: #4a9eff;
     border-color: #4a9eff;
     font-weight: bold;
+}
+
+.ehv-bar-colcount {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.ehv-bar-colcount-btn {
+    padding: 6px 9px;
+    min-width: 26px;
+    text-align: center;
+    font-weight: bold;
+}
+
+.ehv-bar-colcount-val {
+    min-width: 26px;
+    text-align: center;
+    color: #fff;
+    font-size: 13px;
+    font-weight: bold;
+    background: #222;
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 5px 4px;
+    line-height: 1;
 }
 
 .ehv-bar-main:hover {
