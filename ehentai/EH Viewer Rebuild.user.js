@@ -2,7 +2,7 @@
 // @name         EH Viewer Rebuild
 // @name:zh-CN   EH站阅读器重构版
 // @namespace    ehentai
-// @version      1.8.00
+// @version      1.9.00
 // @author       Rebuild from Comic Looms
 // @description  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
 // @description:zh-CN  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
@@ -18,7 +18,7 @@
 // @run-at       document-end
 // ==/UserScript==
 // 脚本版本号常量，每次版本更新时需同步更新此处和头部@version
-const EHV_SCRIPT_VERSION = "1.8.00";
+const EHV_SCRIPT_VERSION = "1.9.00";
 //1.6.4 refactor:EH Viewer缩略图显示重构 从拆分雪碧图到Css控制
 //1.6.5 feat:实现autoLoad（自动加载） autoLoadInBackground（后台保持加载）设置功能
 //1.6.6 fix:重新设计大图界面autoLoad表现
@@ -26,12 +26,13 @@ const EHV_SCRIPT_VERSION = "1.8.00";
 //1.6.8 feat:autoExpandAllPages自动加载全部缩略图页
 //1.6.10 fix:_loadAll()先进先出加载队列改为open()高优先级插队
 //1.8.00 refactor:缩略图与大图界面雪碧图直显改为固定内框+transform scale，不再依赖雪碧图完整尺寸(getSpriteSize)，修复慢加载时位置错位以及出现的一系列问题
+//1.9.00 fix: 修复横向模式浏览器缩放/还原时的滚动跳变（改为锚定视口中心图恢复），并优化缩放与滚动停止的耗时（增量重算未加载占位 inner、二分定位视口中心图、inner 引用缓存）
 //待解决bug
 //Retry with nl value:  不知道是哪个图片触发的
 //自动加载队列及优先级实现方式有些复杂，感觉可以重构
-//浏览器缩放图片错位，主要是横向浏览模式
 (function () {
     "use strict";
+
 
     // ============================================================================
     // 第一部分：常量与正则表达式
@@ -2342,6 +2343,12 @@ const EHV_SCRIPT_VERSION = "1.8.00";
             this._scrollTimer = null;
             /** @type {number} 上一次的缩放值，用于计算缩放比例 */
             this._lastScale = 100;
+            /** @type {number} 上一次resize时记录的视口高度（横向模式判断视口变化用） */
+            this._lastViewportHeight = 0;
+            /** @type {number} 横向模式resize锚定的视口中心图片索引（滚动停止时更新） */
+            this._anchorIndex = 0;
+            /** @type {number} 视口中心相对锚定图左缘的偏移比例(0~1)，resize后按新布局恢复 */
+            this._anchorOffsetPct = 0.5;
             /** @type {boolean} 翻页模式自动翻页锁，防止重复触发 */
             this._paginationFlipping = false;
             /** @type {number} 翻页模式当前页的水平平移偏移量 */
@@ -2475,17 +2482,47 @@ const EHV_SCRIPT_VERSION = "1.8.00";
 
 
 
-            // 浏览器窗口缩放：只重算inner scale，滚动位置交给浏览器原生scroll-anchoring
+            // 浏览器窗口缩放（含拖拽窗口的高频 resize，快慢/时长不定）：
+            // - 连续/翻页：滚动位置交给浏览器原生 scroll-anchoring（overflow-anchor:auto），只重算 inner scale；
+            // - 横向模式：overflow-anchor 已禁用（原生不可靠），图片高=scale vh 随视口自动伸缩、内容总宽同比变化，
+            //   故按视口高度比例手动换算 scrollLeft 保持当前观看点；
+            //   拖拽期间由 rAF 节流保证每帧只处理一次，链式比例无累计误差，事件流结束后最后一帧自然收敛
             this._resizeRafPending = false;
             this._onResize = () => {
-                if (!this.overlay || !this.overlay.isConnected) return;
+                if (!this.isOpen || !this.overlay || !this.overlay.isConnected) return;
                 if (this._resizeRafPending) return;
                 this._resizeRafPending = true;
                 requestAnimationFrame(() => {
                     this._resizeRafPending = false;
-                    this.itemMap.forEach(w => this._applyItemScale(w));
-                    if (this.config.get("readMode") === "pagination") {
+                    const mode = this.config.get("readMode");
+                    if (mode === "pagination") {
+                        // 翻页模式：图片尺寸为px硬编码，需按新视口全量重算
+                        this.itemMap.forEach(w => this._applyItemScale(w));
                         this._updatePaginationAlignment();
+                    } else {
+                        if (mode === "horizontal") {
+                            // 横向：先读锚点（resize后浏览器已按新vh reflow、布局未dirty）→ 轻量重算占位inner → 恢复scrollLeft
+                            const container = this.scrollContainer;
+                            const vh = window.innerHeight;
+                            if (container && vh !== this._lastViewportHeight) {
+                                // 1.8.03 fix:浏览器重排会先把超界scrollLeft clamp到新maxScroll，rAF执行时链式基准已被污染(日志证实 slBefore被clamp)。
+                                // 改为锚定"视口中心图(索引+偏移比例)"：直接用锚点图在新布局下的 offsetLeft 恢复，免疫 clamp 竞态。
+                                const anchor = this.itemMap.get(this._anchorIndex);
+                                const target = anchor
+                                    ? anchor.offsetLeft + anchor.offsetWidth * this._anchorOffsetPct - container.clientWidth / 2
+                                    : container.scrollLeft * (vh / (this._lastViewportHeight || vh));
+                                const oldBehavior = container.style.scrollBehavior;
+                                container.style.scrollBehavior = "auto";
+                                // 1.8.04 perf:只重算未加载占位图的inner scale（已加载图为视口相对单位自动跟随）
+                                this._applyInnerScalesOnResize();
+                                container.scrollLeft = Math.max(0, Math.min(target, container.scrollWidth - container.clientWidth));
+                                container.style.scrollBehavior = oldBehavior;
+                            }
+                            this._lastViewportHeight = vh;
+                        } else {
+                            // 连续：图片尺寸为视口相对单位自动跟随，只需重算未加载占位图的inner scale（1.8.04 perf）
+                            this._applyInnerScalesOnResize();
+                        }
                     }
                 });
             };
@@ -2760,6 +2797,9 @@ const EHV_SCRIPT_VERSION = "1.8.00";
                         this.scrollContainer.scrollTop = wrapper.offsetTop;
                     }
                 }
+                // 同步横向模式resize锚点：打开/切换模式时视口中心对准当前图中心
+                this._anchorIndex = this.currentIndex;
+                this._anchorOffsetPct = 0.5;
                 // 恢复平滑滚动
                 this.scrollContainer.style.scrollBehavior = oldScrollBehavior;
             }
@@ -2769,6 +2809,8 @@ const EHV_SCRIPT_VERSION = "1.8.00";
             this.zoomValue.textContent = this._getCurrentScale() + "%";
             // 重建视图后更新缩放基准
             this._lastScale = this._getCurrentScale();
+            // 重置横向模式resize的视口高度记账（与 _lastScale 同生命周期，避免拖拽窗口时比例基准陈旧）
+            this._lastViewportHeight = window.innerHeight;
         }
 
         /**
@@ -2799,8 +2841,11 @@ const EHV_SCRIPT_VERSION = "1.8.00";
                 }
                 // 方式1：保持占位阶段盒子尺寸不重新算，避免占位→加载因比例细微差异导致位移
                 // 大图解码完再移除雪碧图占位inner，避免设src到load之间短暂空白闪烁
-                const _inner = wrapper.querySelector(":scope > .ehv-big-sprite-inner");
-                if (_inner) _inner.remove();
+                const _inner = wrapper._ehvInner || wrapper.querySelector(":scope > .ehv-big-sprite-inner");
+                if (_inner) {
+                    _inner.remove();
+                    wrapper._ehvInner = null; // 1.8.05: 同步清空缓存，已加载图不再走 inner 逻辑
+                }
             });
 
             // 右上角进度百分比
@@ -2909,12 +2954,14 @@ const EHV_SCRIPT_VERSION = "1.8.00";
                 img.src = TRANSPARENT_1PX_GIF;
                 img.dataset.placeholder = "1";
                 // v1.7.9：改用 inner scaler 画雪碧图占位（和缩略图网格一致），不再依赖 getSpriteSize
-                let inner = wrapper.querySelector(":scope > .ehv-big-sprite-inner");
+                let inner = wrapper._ehvInner || wrapper.querySelector(":scope > .ehv-big-sprite-inner");
                 if (!inner) {
                     inner = document.createElement("div");
                     inner.className = "ehv-big-sprite-inner";
                     wrapper.insertBefore(inner, img);
                 }
+                // 1.8.05 perf: 缓存 inner 引用，resize 每帧免 querySelector（移除时同步置 null）
+                wrapper._ehvInner = inner;
                 inner.style.width = rect.w + "px";
                 inner.style.height = rect.h + "px";
                 inner.style.backgroundImage = `url("${fetcher.node.sprite.url}")`;
@@ -3182,7 +3229,7 @@ const EHV_SCRIPT_VERSION = "1.8.00";
             }
 
             // v1.7.9：inner scaler 占位，按 img 实际宽度写 inner transform scale
-            const _inner = wrapper.querySelector(":scope > .ehv-big-sprite-inner");
+            const _inner = wrapper._ehvInner || wrapper.querySelector(":scope > .ehv-big-sprite-inner");
             if (_inner) {
                 const _cw = parseFloat(_inner.dataset.cw) || 0;
                 const _ch = parseFloat(_inner.style.height) || 0;
@@ -3208,6 +3255,40 @@ const EHV_SCRIPT_VERSION = "1.8.00";
                     _inner.style.transform = `translate(-50%, -50%) scale(${imgW / _cw})`;
                 }
             }
+        }
+
+        /**
+         * 仅重算未加载占位图的 inner transform scale（resize 轻量路径，1.8.04 perf）
+         * 已加载图：img 尺寸为视口相对单位(横向=vh、连续=百分比)，浏览器缩放/拖拽窗口时自动跟随，无需 JS 重写；
+         * 未加载图：inner 为固定 cw×ch px + transform scale，不会自动跟随视口，必须按新视口重算；
+         * 相同 transform 跳过写入，避免无谓的 style 变更使布局 dirty（强制 reflow 是卡顿主因）。
+         */
+        _applyInnerScalesOnResize() {
+            const mode = this.config.get("readMode");
+            const scale = this._getCurrentScale();
+            const vh = window.innerHeight;
+            const contW = this.scrollContainer ? this.scrollContainer.clientWidth : window.innerWidth;
+            this.itemMap.forEach((wrapper) => {
+                const _inner = wrapper._ehvInner;
+                if (!_inner) return; // 已加载（inner 已移除）→ 跳过，不回退 querySelector
+                const _cw = parseFloat(_inner.dataset.cw) || 0;
+                const _ch = parseFloat(_inner.style.height) || 0;
+                if (_cw > 0 && _ch > 0) {
+                    let imgW;
+                    if (mode === "horizontal") {
+                        imgW = (vh * scale / 100) * _cw / _ch;
+                    } else if (mode === "continuous") {
+                        imgW = contW * scale / 100;
+                    } else {
+                        return; // 翻页模式保持完整 _applyItemScale 路径
+                    }
+                    const t = `translate(-50%, -50%) scale(${imgW / _cw})`;
+                    if (_inner.style.transform !== t) {
+                        _inner.style.transformOrigin = "center";
+                        _inner.style.transform = t;
+                    }
+                }
+            });
         }
 
         /**
@@ -3499,20 +3580,50 @@ const EHV_SCRIPT_VERSION = "1.8.00";
             const scrollPos = mode === "horizontal" ? container.scrollLeft : container.scrollTop;
             const viewSize = mode === "horizontal" ? container.clientWidth : container.clientHeight;
 
-            // 找到视口中心对应的图片
+            // 1.8.05 perf: wrapper 位置随索引单调递增（横向 offsetLeft / 连续 offsetTop，flex nowrap 保证），
+            // 视口中心图用二分 O(log n) 定位，替代原 O(n) 全量遍历（布局读取 535 → ~log2(n) 次）
+            const viewCenter = scrollPos + viewSize / 2;
+            const items = Array.from(this.itemMap.values());
+            if (items.length === 0) return;
+            const isH = mode === "horizontal";
+            let lo = 0, hi = items.length - 1, found = -1;
+            while (lo <= hi) {
+                const mid = (lo + hi) >> 1;
+                const w = items[mid];
+                const pos = isH ? w.offsetLeft : w.offsetTop;
+                const size = isH ? w.offsetWidth : w.offsetHeight;
+                if (pos + size / 2 < viewCenter) {
+                    lo = mid + 1;      // 该图中心仍在视口中心左侧 → 最近图在右侧
+                } else {
+                    found = mid;       // 第一个 itemCenter >= viewCenter 的图
+                    hi = mid - 1;
+                }
+            }
+            // 距离函数单峰，最近图必在 found 与其左侧邻居之间；找不到说明视口中心在所有图之后 → 最后一张
             let closestIndex = this.currentIndex;
             let closestDist = Infinity;
-            this.itemMap.forEach((wrapper, i) => {
-                const itemPos = mode === "horizontal" ? wrapper.offsetLeft : wrapper.offsetTop;
-                const itemSize = mode === "horizontal" ? wrapper.offsetWidth : wrapper.offsetHeight;
-                const itemCenter = itemPos + itemSize / 2;
-                const viewCenter = scrollPos + viewSize / 2;
-                const dist = Math.abs(itemCenter - viewCenter);
+            let bestPos = 0, bestSize = 0;
+            const _check = (ci) => {
+                const w = items[ci];
+                if (!w) return;
+                const itemPos = isH ? w.offsetLeft : w.offsetTop;
+                const itemSize = isH ? w.offsetWidth : w.offsetHeight;
+                if (itemSize <= 0) return;
+                const dist = Math.abs(itemPos + itemSize / 2 - viewCenter);
                 if (dist < closestDist) {
                     closestDist = dist;
-                    closestIndex = i;
+                    closestIndex = ci;
+                    bestPos = itemPos;
+                    bestSize = itemSize;
                 }
-            });
+            };
+            if (found >= 0) { _check(found); _check(found - 1); }
+            else { _check(items.length - 1); }
+            // 更新横向模式resize锚点：中心图索引 + 中心相对该图左缘的偏移比例（1.8.03）
+            if (bestSize > 0) {
+                this._anchorIndex = closestIndex;
+                this._anchorOffsetPct = (viewCenter - bestPos) / bestSize;
+            }
 
             if (closestIndex !== this.currentIndex) {
                 this.currentIndex = closestIndex;
