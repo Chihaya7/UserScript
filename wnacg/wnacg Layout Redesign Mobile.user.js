@@ -4,7 +4,7 @@
 // @namespace    绅士漫画
 // @description:zh-CN  仅支持移动端，更新排行搜索页重做排列样式，点击图片直接打开slide阅读页，，点击日期一键复制标题。
 // @description Mobile only. Redesign page layout, open slide reader by clicking covers, copy title by clicking date.
-// @version      2026-09-16 03:29:24
+// @version      2026-09-26 15:41:01
 // @icon         https://wnacg.com/favicon.ico
 // @match        https://*.wnacg.ru/*
 // @match        https://*.wnacg.com/*
@@ -73,14 +73,14 @@
         width: 100%  !important; /* 强行让每个漫画条目卡片的宽度填满屏幕的 100% */
 
         box-sizing: border-box !important; /* 设置盒模型为包含内边距与边框，确保整体宽度精准计算、绝不溢出 */
-        margin: 0 0 5px 0 !important; /* 设置外边距：仅在每个条目的底部留出 10 像素的间距以作视觉隔离 */
+        margin: 0 0 0 0 !important; /* 设置外边距 */
         position: relative !important; /* 将条目设为相对定位，保持图文层级关系的稳定 */
-        padding: 10px !important;
+        padding: 6px !important;
         border-bottom: 1px solid #eee !important; /* 強制在卡片底部加上一條 1 像素的淺灰色網頁分割線 */
     } /* 结束条目卡片样式的定义 */
 
     /* a 消除自身盒子，子元素直接参与 li 的 grid */
-    #classify_container li a.ImgA , ul.col_3_2>li a.ImgA { /* 选中包裹了图片和标题的超链接 a 标签 */
+    #classify_container li a.ImgA , ul.col_3_2>li a.ImgA { /* 让search页面适配，选中包裹了图片和标题的超链接 a 标签 */
         display: contents !important; /* 顶级魔法：让 a 标签自身不参与排版，使其子元素（图片、标题）直接暴露给父级 Grid 容器 */
     } /* 结束超链接标签样式的定义 */
 
@@ -94,7 +94,17 @@
         object-fit: cover !important; /* 若图片比例与格子不符，自动进行居中裁剪填充，确保排版整齐美观 */
     } /* 结束图片样式的定义 */
 
-    #classify_container li a.ImgA span, /* 匹配 search 页面的标题 */
+    #classify_container li a.ImgA span.sr_tags.sm{/* 匹配 albums 页面合集标识 */
+        /*bottom: 10px;
+        grid-column: 1;
+        grid-row: 1;
+        position: unset;*/
+        left: 2%;
+        top: 2%;
+        bottom:unset;
+    }
+
+    #classify_container li a.ImgA span:not([class]), /* 匹配 search 页面的标题,:not([class])避免匹配到albums页的合集等标识*/
         #classify_container > li .txtA,/* 匹配 albums 页面的标题 */
         ul.col_3_2>li a.txtA{/* 匹配 推荐 页面的标题 */
 
@@ -176,6 +186,13 @@
         display: block;
     }
 
+    /* 标识 */
+    #topImgCon .itemImg span{
+        bottom: unset;/* 覆写原有 */
+        left: 2%;
+        top: 2%;
+    }
+
     /* 右侧区域外层容器 */
     #topImgCon .itemTxt{
         flex: 1;/* 自动占 剩下全部宽度 */
@@ -219,8 +236,8 @@
 
     /* 排名徽章 */
     #topImgCon .number{
-        top: 10px;
-        left: 10px;
+        margin-top: 6px;
+        right: 46%;
     }
  
     /* =========================
