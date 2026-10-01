@@ -2,7 +2,7 @@
 // @name         EH Viewer Rebuild
 // @name:zh-CN   EH站阅读器重构版
 // @namespace    ehentai
-// @version      1.10.04
+// @version      1.11.05
 // @author       Rebuild from Comic Looms
 // @description  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
 // @description:zh-CN  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
@@ -18,7 +18,7 @@
 // @run-at       document-end
 // ==/UserScript==
 // 脚本版本号常量，每次版本更新时需同步更新此处和头部@version
-const EHV_SCRIPT_VERSION = "1.10.04";
+const EHV_SCRIPT_VERSION = "1.11.05";
 //1.6.4 refactor:EH Viewer缩略图显示重构 从拆分雪碧图到Css控制
 //1.6.5 feat:实现autoLoad（自动加载） autoLoadInBackground（后台保持加载）设置功能
 //1.6.6 fix:重新设计大图界面autoLoad表现
@@ -32,9 +32,17 @@ const EHV_SCRIPT_VERSION = "1.10.04";
 //1.10.02 feat: 跨行图较宽（≥25%容器宽）时，跨行带与被跨越行自动各减少一张图，避免挤压同行图片
 //1.10.03 feat: 设置新增"跨行跨列布局"开关（默认开启，提示可能出现空白）；关闭后跨行/跨列/减图全部停用，退回纯等高行布局（与早期版本一致）
 //1.10.04 feat: 控制栏新增"每行缩略图数量 -/+"快捷调节按钮，设置面板数值同步更新
+//1.11.00 feat: 缩略图页码标签悬停1秒触发所属格子大图优先加载，加载完成按宽高自适应浮窗显示，鼠标移出大图自动消失
+//1.11.01 feat: 浮窗改为浏览器窗口自适应（最大接近占满窗口）；显示位置改为鼠标处（放不下自动翻转到另一侧）；修复二次悬停时已缓存大图仍显示"加载中"的问题
+//1.11.02 fix: 修复浮窗尺寸误用缩略图尺寸(node.wh)导致大图显示过小的问题，改为读取大图真实解码尺寸(img.naturalWidth/Height)后按窗口自适应；同时修复二次悬停时缓存分支未重新显示浮窗(display未置block)的问题
+//1.11.03 feat: 悬停触发时间由1秒缩短为50毫秒；大图下载完毕后将格子内缩略图替换为大图（按格子当前尺寸显示，即放大后的缩略图大小，非原始尺寸）
+//1.11.04 feat: 大图下载后替换缩略图同样支持雪碧图模式格子（自动创建img覆盖显示并隐藏雪碧图背景），不再跳过
+//1.11.05 fix: 缩略图替换改为挂载到加载完成回调(onLoaded)统一触发，任何下载方式（悬停/自动预加载/大图阅读）大图下载完毕都会替换格子缩略图，不再仅限悬停触发
 //待解决bug
 //Retry with nl value:  不知道是哪个图片触发的
 //自动加载队列及优先级实现方式有些复杂，感觉可以重构
+//1.11.05预览图的触发逻辑不顺手，加载时会显示小黑窗
+//打包下载图片名字包含后缀
 (function () {
     "use strict";
 
@@ -1897,6 +1905,25 @@ const EHV_SCRIPT_VERSION = "1.10.04";
                 this._updateThumbProgress(index, 0, 0, true);
             });
 
+            // 1.11.00 页码标签悬停预览大图：事件委托绑定 + 滚动时隐藏浮窗
+            this.gridEl.addEventListener("mouseover", (e) => {
+                const label = e.target.closest ? e.target.closest(".ehv-thumb-pagelabel") : null;
+                if (!label) return;
+                const item = label.closest(".ehv-thumb-item");
+                const fetcher = item && item._fetcher;
+                if (fetcher) this._schedulePreview(fetcher, e.clientX, e.clientY);
+            });
+            this.gridEl.addEventListener("mouseout", (e) => {
+                const label = e.target.closest ? e.target.closest(".ehv-thumb-pagelabel") : null;
+                if (!label) return;
+                // 移入浮窗（大图）则保留；移出到其它区域则取消/隐藏
+                const rt = e.relatedTarget;
+                if (rt && rt.closest && rt.closest(".ehv-thumb-preview")) return;
+                this._cancelPreview();
+            });
+            this._onScrollHide = () => this._cancelPreview(true);
+            document.addEventListener("scroll", this._onScrollHide, true);
+
             this._applyLayout();
 
             // 监听容器宽度变化，自动重新布局
@@ -2046,16 +2073,20 @@ const EHV_SCRIPT_VERSION = "1.10.04";
             }
             // 注意：不在这里设置固定尺寸，由 _layoutJustifiedRows() 统一计算
 
-            // 页码标签
+            // 页码标签（悬停 1 秒触发大图浮窗预览）
             const pageLabel = document.createElement("div");
             pageLabel.className = "ehv-thumb-pagelabel";
             pageLabel.textContent = String(fetcher.index + 1);
+            pageLabel.title = "悬停 1 秒预览大图";
+
+            // 保存图片加载器引用，供浮窗预览优先加载大图
+            item._fetcher = fetcher;
 
             // 加载状态指示器
             const statusIndicator = document.createElement("div");
             statusIndicator.className = "ehv-thumb-status";
 
-            // 监听加载状态变化
+            // 监听加载状态变化（1.11.05：任何加载方式——悬停/自动预加载/大图阅读——的大图下载完毕都替换格子缩略图）
             fetcher.onLoaded((success) => {
                 if (success) {
                     item.classList.add("ehv-loaded");
@@ -2063,6 +2094,9 @@ const EHV_SCRIPT_VERSION = "1.10.04";
                 } else {
                     item.classList.add("ehv-failed");
                     statusIndicator.textContent = "!";
+                }
+                if (success && fetcher.node.blobSrc) {
+                    this._replaceThumbWithBig(fetcher, success, item);
                 }
             });
 
@@ -2076,6 +2110,206 @@ const EHV_SCRIPT_VERSION = "1.10.04";
             });
 
             return item;
+        }
+
+        // ===== 1.11.00 页码标签悬停 1 秒预览大图 =====
+
+        /**
+         * 创建（首次）浮窗元素：单例，位于 body 顶层
+         */
+        _createPreviewEl() {
+            if (this.previewEl) return;
+            this.previewEl = document.createElement("div");
+            this.previewEl.className = "ehv-thumb-preview";
+            this.previewEl.style.display = "none";
+            this.previewLoading = document.createElement("div");
+            this.previewLoading.className = "ehv-thumb-preview-loading";
+            this.previewLoading.textContent = "大图加载中...";
+            this.previewImg = document.createElement("img");
+            this.previewImg.className = "ehv-thumb-preview-img";
+            this.previewImg.alt = "";
+            this.previewEl.appendChild(this.previewLoading);
+            this.previewEl.appendChild(this.previewImg);
+            // 鼠标移出大图（浮窗）→ 自动消失；移入浮窗 → 取消延迟隐藏
+            this.previewEl.addEventListener("mouseleave", () => this._hidePreview());
+            this.previewEl.addEventListener("mouseenter", () => {
+                if (this._previewHideTimer) {
+                    clearTimeout(this._previewHideTimer);
+                    this._previewHideTimer = null;
+                }
+            });
+            document.body.appendChild(this.previewEl);
+        }
+
+        /**
+         * 悬停页码标签：启动 1 秒定时，到点后优先加载所属格子大图并显示浮窗
+         * @param {ImageFetcher} fetcher - 所属格子的图片加载器
+         */
+        _schedulePreview(fetcher, mouseX, mouseY) {
+            this._previewMouseX = mouseX;
+            this._previewMouseY = mouseY;
+            if (this._previewFetcher !== fetcher) {
+                // 切换到另一个格子：立即隐藏当前浮窗，重新计时
+                this._hidePreview();
+                this._previewFetcher = fetcher;
+                this._previewTimer = setTimeout(() => {
+                    this._previewTimer = null;
+                    this._showPreview(fetcher);
+                }, 50);
+            }
+        }
+
+        /**
+         * 取消预览（清定时器；滚动时强制立即隐藏）
+         * @param {boolean} [forceHide=false] - true 表示滚动/离开页面，立即隐藏浮窗
+         */
+        _cancelPreview(forceHide = false) {
+            if (this._previewTimer) { clearTimeout(this._previewTimer); this._previewTimer = null; }
+            if (forceHide) {
+                this._hidePreview();
+                return;
+            }
+            // 浮窗已显示：延迟 300ms 隐藏（留出鼠标从页码标签移向浮窗的时间，进入浮窗则取消）
+            if (this.previewEl && this.previewEl.style.display !== "none") {
+                if (this._previewHideTimer) clearTimeout(this._previewHideTimer);
+                this._previewHideTimer = setTimeout(() => this._hidePreview(), 300);
+            }
+        }
+
+        /**
+         * 显示浮窗并触发大图优先加载
+         * @param {ImageFetcher} fetcher
+         */
+        _showPreview(fetcher) {
+            this._createPreviewEl();
+            this._previewFetcher = fetcher;
+            // 大图已缓存（此前悬停/大图阅读已下载）：直接显示，跳过加载流程
+            if (fetcher.node.blobSrc) {
+                this._replaceThumbWithBig(fetcher, true);
+                this.previewEl.style.display = "block";
+                this._previewLoaded(fetcher, true);
+                return;
+            }
+            // 先显示"加载中"占位
+            this.previewLoading.style.display = "";
+            this.previewLoading.textContent = "大图加载中...";
+            this.previewImg.style.display = "none";
+            this.previewImg.src = "";
+            this.previewEl.style.display = "block";
+            this.previewEl.style.width = "180px";
+            this.previewEl.style.height = "120px";
+            this._positionPreview(this._previewMouseX, this._previewMouseY, 180, 120);
+            // 大图加载完成回调（每个 fetcher 只注册一次）：先替换格子缩略图，再显示浮窗
+            if (!fetcher._previewCb) {
+                fetcher._previewCb = (success) => {
+                    this._replaceThumbWithBig(fetcher, success);
+                    this._previewLoaded(fetcher, success);
+                };
+                fetcher.onLoaded(fetcher._previewCb);
+            }
+            fetcher.load(true);
+        }
+
+        /**
+         * 大图下载完成后，将格子内的缩略图替换为大图（按格子当前尺寸显示，即布局放大后的缩略图大小，非原始尺寸）
+         * 与浮窗显示独立：鼠标移走后下载完成同样替换；重复悬停幂等
+         * 注：仅替换单图模式的 .ehv-thumb-img，雪碧图模式格子无此元素则跳过
+         * @param {ImageFetcher} fetcher
+         * @param {boolean} success
+         */
+        _replaceThumbWithBig(fetcher, success, itemParam) {
+            if (!success || !fetcher.node.blobSrc) return;
+            // 外部传入 item（_createThumbItem 闭包）优先；onLoaded 在 DONE 状态下立即回调时 itemMap 可能尚未写入
+            const item = itemParam || this.itemMap.get(fetcher.index);
+            if (!item) return;
+            const imgWrap = item.querySelector(".ehv-thumb-imgwrap");
+            if (!imgWrap) return;
+            let thumbImg = imgWrap.querySelector(".ehv-thumb-img");
+            if (!thumbImg) {
+                // 雪碧图模式格子没有 img 元素：创建并插入，覆盖显示大图，同时隐藏雪碧图背景
+                thumbImg = document.createElement("img");
+                thumbImg.className = "ehv-thumb-img";
+                thumbImg.alt = "";
+                imgWrap.appendChild(thumbImg);
+                const spriteInner = imgWrap.querySelector(".ehv-sprite-inner");
+                if (spriteInner) spriteInner.style.display = "none";
+            }
+            if (thumbImg.src !== fetcher.node.blobSrc) {
+                thumbImg.src = fetcher.node.blobSrc;
+            }
+        }
+
+        /**
+         * 大图加载完成回调：按宽高自适应显示大图
+         * @param {ImageFetcher} fetcher
+         * @param {boolean} success
+         */
+        _previewLoaded(fetcher, success) {
+            if (this._previewFetcher !== fetcher) return; // 已切换到其它格子
+            if (success && fetcher.node.blobSrc) {
+                this.previewLoading.style.display = "none";
+                this.previewImg.src = fetcher.node.blobSrc;
+                this.previewImg.style.display = "block";
+                // 等大图真实解码尺寸就绪后按浏览器窗口等比缩放显示。
+                // 注意：node.wh 是缩略图尺寸，不能用作大图缩放基准（1.11.02 修复）
+                const applySize = () => {
+                    const iw = this.previewImg.naturalWidth;
+                    const ih = this.previewImg.naturalHeight;
+                    if (!iw || !ih) return; // 尺寸未就绪，保持占位尺寸
+                    const maxW = Math.max(240, window.innerWidth - 16);
+                    const maxH = Math.max(240, window.innerHeight - 16);
+                    const scale = Math.min(maxW / iw, maxH / ih, 1);
+                    const w = Math.max(80, Math.round(iw * scale));
+                    const h = Math.max(80, Math.round(ih * scale));
+                    this.previewEl.style.width = w + "px";
+                    this.previewEl.style.height = h + "px";
+                    this._positionPreview(this._previewMouseX, this._previewMouseY, w, h);
+                };
+                if (this.previewImg.complete && this.previewImg.naturalWidth > 0) {
+                    applySize();
+                } else {
+                    this.previewImg.addEventListener("load", applySize, { once: true });
+                    // 兜底：blob 已被失效（如大图阅读重试清空）时给出失败提示
+                    this.previewImg.addEventListener("error", () => {
+                        this.previewImg.style.display = "none";
+                        this.previewLoading.style.display = "";
+                        this.previewLoading.textContent = "大图加载失败";
+                    }, { once: true });
+                }
+            } else {
+                this.previewLoading.textContent = "大图加载失败";
+            }
+        }
+
+        /**
+         * 将浮窗定位到鼠标位置附近（鼠标右下偏移 14px；右侧/下方放不下则翻转到鼠标另一侧）
+         * @param {number} mx - 触发悬停时鼠标 X（视口坐标）
+         * @param {number} my - 触发悬停时鼠标 Y
+         * @param {number} w - 浮窗宽
+         * @param {number} h - 浮窗高
+         */
+        _positionPreview(mx, my, w, h) {
+            const vw = window.innerWidth, vh = window.innerHeight;
+            let left = mx + 14, top = my + 14;
+            if (left + w > vw - 8) left = mx - w - 14;   // 右侧放不下 → 鼠标左侧
+            if (top + h > vh - 8) top = my - h - 14;     // 下方放不下 → 鼠标上方
+            left = Math.max(8, Math.min(left, vw - w - 8));
+            top = Math.max(8, Math.min(top, vh - h - 8));
+            this.previewEl.style.left = Math.round(left) + "px";
+            this.previewEl.style.top = Math.round(top) + "px";
+        }
+
+        /**
+         * 隐藏浮窗并清空引用
+         */
+        _hidePreview() {
+            if (this._previewTimer) { clearTimeout(this._previewTimer); this._previewTimer = null; }
+            if (this._previewHideTimer) { clearTimeout(this._previewHideTimer); this._previewHideTimer = null; }
+            this._previewFetcher = null;
+            if (this.previewEl) {
+                this.previewEl.style.display = "none";
+                this.previewImg.src = "";
+            }
         }
 
         /**
@@ -4941,6 +5175,34 @@ const EHV_SCRIPT_VERSION = "1.10.04";
     background-repeat: no-repeat;
     transform-origin: top left;
     flex: none;
+}
+
+.ehv-thumb-preview {
+    position: fixed;
+    z-index: 99999;
+    background: rgba(18,18,22,0.96);
+    border: 1px solid #555;
+    border-radius: 6px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.65);
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.ehv-thumb-preview-loading {
+    color: #aaa;
+    font-size: 13px;
+    padding: 16px;
+    white-space: nowrap;
+}
+
+.ehv-thumb-preview-img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #111;
 }
 
 .ehv-thumb-pagelabel {
