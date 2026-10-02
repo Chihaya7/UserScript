@@ -2,7 +2,7 @@
 // @name         wnacg Reading history GIST backup
 // @name:zh-CN   绅士漫画已读记录-移动端
 // @namespace    绅士漫画
-// @version      2026-10-02 03:06:17
+// @version      2026-10-02 11:33:20
 // @description  仅支持移动端，自动记录已读漫画 + IndexedDB + 实时变灰 + 页面新增统计 + Gist 每日同步 + 阅读日期显示 + 搜索页支持 + 历史记录页
 // @icon         https://wnacg.com/favicon.ico
 // @match        https://*.wnacg.ru/*
@@ -354,138 +354,147 @@
     function addStyle() {
         const s = document.createElement('style');
         s.innerHTML = /*css*/`
-            /* 已读条目整体变灰 */
-            .wn-read {
-                opacity: 0.7 !important;
-                filter: grayscale(30%) !important;
-                transition: 0.2s;
-            }
-            .wn-read a { color: #888 !important; }
-            .wn-read a:visited { color: #0000FF !important; }
-            .wn-read-link { color: #777 !important; }
-            .wn-read-link:visited { color: #555 !important; }
+        /* 已读条目整体变灰 */
+        .wn-read {
+            opacity: 0.7 !important;
+            filter: grayscale(30%) !important;
+            transition: 0.2s;
+        }
+        .wn-read a { color: #888 !important; }
+        .wn-read a:visited { color: #0000FF !important; }
+        .wn-read-link { color: #777 !important; }
+        .wn-read-link:visited { color: #555 !important; }
 
-            /* 阅读日期标签 */
-            .wn-date {
-                display: block !important;
-                float: none !important;
-                width: auto !important;
-                height: auto !important;
-                margin: 4px 0 0 0 !important;
-                background: none !important;
-                font-size: 15px;
-                color: #aaa;
-                font-weight: normal;
-            }
+        /* 阅读日期标签 */
+        .wn-date {
+            display: block !important;
+            float: none !important;
+            width: auto !important;
+            height: auto !important;
+            margin: 4px 0 0 0 !important;
+            background: none !important;
+            font-size: 15px;
+            color: #aaa;
+            font-weight: normal;
+        }
+        /* 顶部统计栏 —— 仿照发布页按钮样式，点击打开历史记录 */
+        #wn-stats {
+            float:right;
+            margin: 10px 20px 0 0;
+            padding: 2px 15px;
+            border-radius: 10px;
+            font-size: 14px;
+            line-height: 18px;
+            background: #e0edff;
+            border: 1px solid #2f7df6;
+            color: #2f7df6;
+            text-decoration:none;
+            white-space:nowrap;
+            cursor: pointer;
+            z-index: 9999;
+            user-select: none;
+            align-items: center;
+        }
+        #wn-stats:hover {
+            background:#d0e4ff;
+        }
 
-            /* 顶部统计栏 */
-            #wn-stats {
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                position: absolute;
-                left: 115px;
-                top: 12px;
-                font-size: 13px;
-                color: #999;
-                z-index: 9999;
-                user-select: none;
-            }
-            #wn-stats span { display: inline-block; line-height: 1; }
+        .OperaBar{
+            margin-right:2px;
+        }
 
-            .OperaBar{
-                margin-right:2px;
-            }
+        /* ── 历史记录面板 ── */
+        #wn-hist-panel {
+            display: none;
+            padding: 0;
+            background: #fff;
+            border-top: 1px solid #eee;
+            z-index:99;
+            left:0;
+            right:0;
+            z-index:999;
+            position:absolute;
+        }
 
-            /* ── 历史记录面板 ── */
-            #wn-hist-panel {
-                display: none;
-                padding: 0;
-                background: #fff;
-                border-top: 1px solid #eee;
-                z-index:99;
-                position:relative;
-            }
+        /* 历史记录每行：封面 + 信息 */
+        .wn-hist-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 10px;
+            border-bottom: 1px solid #f0f0f0;
+            cursor: pointer;
+            text-decoration: none;
+            color: inherit;
+        }
+        .wn-hist-item:active { background: #f5f5f5; }
 
-            /* 历史记录每行：封面 + 信息 */
-            .wn-hist-item {
-                display: flex;
-                align-items: center;
-                gap: 10px;
-                padding: 8px 10px;
-                border-bottom: 1px solid #f0f0f0;
-                cursor: pointer;
-                text-decoration: none;
-                color: inherit;
-            }
-            .wn-hist-item:active { background: #f5f5f5; }
+        /* 封面图 */
+        .wn-hist-cover {
+            width: 56px;
+            height: 80px;
+            object-fit: cover;
+            border-radius: 4px;
+            background: #eee;
+            flex-shrink: 0;
+        }
 
-            /* 封面图 */
-            .wn-hist-cover {
-                width: 56px;
-                height: 80px;
-                object-fit: cover;
-                border-radius: 4px;
-                background: #eee;
-                flex-shrink: 0;
-            }
+        /* 封面占位（加载失败 / 无封面） */
+        .wn-hist-no-cover {
+            width: 56px;
+            height: 80px;
+            border-radius: 4px;
+            background: #e0e0e0;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            color: #aaa;
+        }
 
-            /* 封面占位（加载失败 / 无封面） */
-            .wn-hist-no-cover {
-                width: 56px;
-                height: 80px;
-                border-radius: 4px;
-                background: #e0e0e0;
-                flex-shrink: 0;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 11px;
-                color: #aaa;
-            }
+        .wn-hist-info { flex: 1; overflow: hidden; }
+        .wn-hist-title {
+            font-size: 14px;
+            color: #333;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .wn-hist-date { font-size: 12px; color: #aaa; margin-top: 4px; }
 
-            .wn-hist-info { flex: 1; overflow: hidden; }
-            .wn-hist-title {
-                font-size: 14px;
-                color: #333;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-            }
-            .wn-hist-date { font-size: 12px; color: #aaa; margin-top: 4px; }
-
-            /* 分页器 */
-            #wn-hist-pager {
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                gap: 6px;
-                padding: 10px 0 14px;
-                flex-wrap: wrap;
-            }
-            .wn-page-btn {
-                min-width: 32px;
-                height: 32px;
-                line-height: 32px;
-                text-align: center;
-                padding: 0 6px;
-                border: 1px solid #ddd;
-                border-radius: 4px;
-                background: #fff;
-                font-size: 13px;
-                color: #555;
-                cursor: pointer;
-            }
-            .wn-page-btn.active {
-                background: #e74c3c;
-                color: #fff;
-                border-color: #e74c3c;
-                font-weight: bold;
-            }
-            .TabBar .classBox .OperaBar li:nth-child(n) {/* 历史页会和albums页冲突 */
-                width: 25% !important;
-            }
-        `;
+        /* 分页器 */
+        #wn-hist-pager {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 6px;
+            padding: 10px 0 14px;
+            flex-wrap: wrap;
+        }
+        .wn-page-btn {
+            min-width: 32px;
+            height: 32px;
+            line-height: 32px;
+            text-align: center;
+            padding: 0 6px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background: #fff;
+            font-size: 13px;
+            color: #555;
+            cursor: pointer;
+        }
+        .wn-page-btn.active {
+            background: #e74c3c;
+            color: #fff;
+            border-color: #e74c3c;
+            font-weight: bold;
+        }
+        .TabBar .classBox .OperaBar li:nth-child(n) {/* 历史页会和albums页冲突 */
+            width: 25% !important;
+        }
+    `;
         document.head.appendChild(s);
     }
 
@@ -530,11 +539,12 @@
     function updateStats() {
         const el = document.getElementById('wn-stats');
         if (!el) return;
-        el.innerHTML = `<span>${totalCount}</span><span>|</span><span>${addedCount}</span>`;
+        el.innerHTML = `${totalCount} | ${addedCount}`;
     }
 
     // =========================
     // 在页面 header 中插入统计栏
+    // 点击统计栏显示历史面板
     // =========================
 
     async function createStats() {
@@ -542,6 +552,10 @@
         if (!header) return;
         const el = document.createElement('div');
         el.id = 'wn-stats';
+        // 直接调用通用切换函数
+        el.addEventListener('click', () => {
+            toggleHistPanel(header, 'afterend');
+        });
         header.appendChild(el);
         updateStats();
     }
@@ -640,11 +654,10 @@
     }
 
     // =========================
-    // 历史记录 UI
-    // 点击 tab 展开面板，按时间戳倒序显示漫画列表，每页 10 条，含分页器
+    // fav页面历史记录 UI创建
     // =========================
 
-    function createHistUI() {
+    function createFavHistUI() {
         const classBox = document.querySelector('.TabBar .classBox');
         if (!classBox) return;
         const classTit = classBox.querySelector('#classTit');
@@ -655,21 +668,41 @@
         li.innerHTML = '<a href="javascript:void(0)" id="wn-hist-tab">历史记录</a>';
         classTit.appendChild(li);
 
-        // 创建历史面板容器（列表区 + 分页器）
-        const panel = document.createElement('div');
-        panel.id = 'wn-hist-panel';
-        panel.innerHTML = '<div id="wn-hist-list"></div><div id="wn-hist-pager"></div>';
-        classBox.appendChild(panel);
-
-        // tab 点击：切换显示/隐藏，每次展开重新加载第 1 页，同时收起数据管理面板
         li.querySelector('#wn-hist-tab').addEventListener('click', () => {
-            const v = panel.style.display !== 'none';
-            if (v) { panel.style.display = 'none'; return; }
-            panel.style.display = 'block';
-            const mp = document.getElementById('wn-mgmt-panel');
-            if (mp) mp.style.display = 'none';
-            renderHistPage(1);
+            toggleHistPanel(classBox, 'beforeend');
         });
+    }
+
+    /**
+     * 创建历史面板
+     * 通用切换历史面板入口
+     * 任意页面调用此函数即可打开/关闭历史面板
+     */
+    async function toggleHistPanel(refEl, position) {
+        let hp = document.getElementById('wn-hist-panel');
+        let mp = document.getElementById('wn-mgmt-panel');
+
+        if (!hp) {
+            hp = document.createElement('div');
+            hp.id = 'wn-hist-panel';
+            hp.innerHTML = '<div id="wn-hist-list"></div><div id="wn-hist-pager"></div>';
+            hp.style.cssText += `
+                    left:0;
+                    right:0;
+                    position:absolute;
+                `;
+            refEl.insertAdjacentElement(position, hp);
+        }
+
+        const isShow = hp.style.display !== 'none' && hp.style.display !== '';
+        if (isShow) {
+            hp.style.display = 'none';
+            return;
+        }
+
+        hp.style.display = 'block';
+        if (mp) mp.style.display = 'none';
+        await renderHistPage(1);
     }
 
     // =========================
@@ -826,13 +859,28 @@
     // =========================
 
     function buildPageRange(cur, total) {
-        if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
-        const set = new Set([1, total]);
-        for (let i = cur - 1; i <= cur + 1; i++) if (i >= 1 && i <= total) set.add(i);
+        // 总页数少，全部直接显示
+        if (total <= 10) {
+            return Array.from({ length: total }, (_, i) => i + 1);
+        }
+        const set = new Set([1, total, cur]);
+        // 当前页前后各5页
+        const offset = 5;
+        for (let i = cur - offset; i <= cur + offset; i++) {
+            if (i >= 1 && i <= total) {
+                set.add(i);
+            }
+        }
         const sorted = [...set].sort((a, b) => a - b);
         const result = [];
         let prev = 0;
-        sorted.forEach(p => { if (p - prev > 1) result.push('...'); result.push(p); prev = p; });
+        sorted.forEach(p => {
+            if (p - prev > 1) {
+                result.push('...');
+            }
+            result.push(p);
+            prev = p;
+        });
         return result;
     }
 
@@ -1132,7 +1180,7 @@
         await createStats();
         if (location.href.includes('users_fav')) {
             createMgmtUI();
-            createHistUI();
+            createFavHistUI();
         }
         //<ul class="col_2" id="classify_container">
         // if (document.getElementById('classify_container')) {
