@@ -2,7 +2,7 @@
 // @name         wnacg Reading history GIST backup
 // @name:zh-CN   绅士漫画已读记录-移动端
 // @namespace    绅士漫画
-// @version      2026-10-02 11:33:20
+// @version      2026-10-03 05:52:53
 // @description  仅支持移动端，自动记录已读漫画 + IndexedDB + 实时变灰 + 页面新增统计 + Gist 每日同步 + 阅读日期显示 + 搜索页支持 + 历史记录页
 // @icon         https://wnacg.com/favicon.ico
 // @match        https://*.wnacg.ru/*
@@ -412,7 +412,6 @@
             z-index:99;
             left:0;
             right:0;
-            z-index:999;
             position:absolute;
         }
 
@@ -686,11 +685,7 @@
             hp = document.createElement('div');
             hp.id = 'wn-hist-panel';
             hp.innerHTML = '<div id="wn-hist-list"></div><div id="wn-hist-pager"></div>';
-            hp.style.cssText += `
-                    left:0;
-                    right:0;
-                    position:absolute;
-                `;
+
             refEl.insertAdjacentElement(position, hp);
         }
 
@@ -750,8 +745,6 @@
         const pagerEl = document.getElementById('wn-hist-pager');
         if (!listEl || !pagerEl) return;
 
-        listEl.innerHTML = '<div style="padding:12px;color:#aaa;font-size:13px;">加载中...</div>';
-        pagerEl.innerHTML = '';
 
         if (totalCount === 0) {
             listEl.innerHTML = '<div style="padding:12px;color:#aaa;font-size:13px;">暂无记录</div>';
@@ -763,7 +756,8 @@
         const slice = await readPageByTs((cur - 1) * PAGE, PAGE);
         const host = await getCoverHost();
 
-        listEl.innerHTML = '';
+        // 构建列表（离屏fragment）
+        const listFrag = document.createDocumentFragment();
         slice.forEach(r => {
             const coverUrl = (host && r.coverPath) ? `${host}/${r.coverPath}` : '';
             const comicUrl = `https://${location.hostname}/photos-index-aid-${r.id}.html`;
@@ -799,11 +793,16 @@
                 try { await saveComic(r.id, r.title, r.coverPath); } catch { }
                 location.href = comicUrl;
             });
-
-            listEl.appendChild(item);
+            listFrag.appendChild(item);
         });
+        // 原子替换列表
+        listEl.replaceChildren(listFrag);
 
-        renderPager(pagerEl, cur, totalPages);
+        // ========== 分页器：传入fragment，在内存构建，不操作真实DOM ==========
+        const pageFrag = document.createDocumentFragment();
+        renderPager(pageFrag, cur, totalPages);
+        // 一次性替换页面上分页器全部子节点
+        pagerEl.replaceChildren(pageFrag);
     }
 
     // =========================
@@ -818,14 +817,14 @@
         return d;
     }
 
-    // =========================
-    // 渲染分页器按钮
-    // 显示「上一页」「页码」「下一页」，超过 7 页时做省略号折叠
-    // @param {Element} el    - 分页器容器
-    // @param {number}  cur   - 当前页码
-    // @param {number}  total - 总页数
-    // =========================
 
+    /**
+     * 渲染分页器按钮
+     * 显示「上一页」「页码」「下一页」，超过 7 页时做省略号折叠
+     * @param {DocumentFragment} el 离屏碎片，所有按钮挂载在这里
+     * @param {number} cur 当前页码
+     * @param {number} total 总页数
+     */
     function renderPager(el, cur, total) {
         if (total <= 1) return;
         const btn = (label, page, active = false) => {
