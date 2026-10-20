@@ -3,7 +3,7 @@
 // @name:zh-CN   榜单 / 列表 / 搜索 自动滚动加载下一页
 // @namespace    绅士漫画
 // @icon         https://wnacg.com/favicon.ico
-// @version      2026-10-02 03:06:17
+// @version      2026-10-20 02:35:12
 // @description  支持排行页、专辑列表页、搜索页，排除分类项，滚动到剩余10%自动加载下一页，模拟安卓UA
 // @author       You
 // @match        https://*.wnacg.ru/*
@@ -39,6 +39,8 @@
 // @match        https://www.wn10.shop/*
 // @match        https://www.wn001.cfd/*
 // @match        https://www.wn002.cfd/*
+// @match        https://www.wn003.cfd/*
+// @match        https://www.wn004.cfd/*
 // @grant        GM_xmlhttpRequest
 // @run-at       document-end
 // @time         2026-08-26 18:09:19

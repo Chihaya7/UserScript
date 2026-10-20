@@ -3,7 +3,7 @@
 // @name     BodyDragResize
 // @namespace    绅士漫画
 // @icon         https://wnacg.com/favicon.ico
-// @version      2026-10-02 03:06:17
+// @version      2026-10-20 02:35:12
 // @description  网页body拖拽缩放,用于快速调整绅士漫画移动版网页大小，从而控制漫画显示列数
 // @author       You
 // @match        https://*.wnacg.ru/*
@@ -39,6 +39,8 @@
 // @match        https://www.wn10.shop/*
 // @match        https://www.wn001.cfd/*
 // @match        https://www.wn002.cfd/*
+// @match        https://www.wn003.cfd/*
+// @match        https://www.wn004.cfd/*
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
