@@ -2,9 +2,9 @@
 // @name               wnacg Viewer
 // @name:zh-CN         wnacg Viewer
 // @namespace          绅士漫画
-// @version            4.17.3
+// @version            4.18.0
 // @author
-// @description        更改缩略图列数，图片分辨率重新采样，未优化，卡顿明显
+// @description        
 // @description:en     Manga Viewer + Downloader, Focus on experience and low load on the site. Support you in finding the site you are searching for.
 // @description:zh-CN  漫画阅读 + 下载器，注重体验和对站点的负载控制。支持你正在搜索的站点。
 // @license            MIT
@@ -1838,7 +1838,7 @@
         baseURL;
         galleryURL;
         async *fetchPagesSource() {
-            const id = this.extractIDFromHref(window.location.href);
+            const id = this.extractIDFromChid(window.location.href);
             if (!id) throw new Error("Cannot find gallery ID");
             this.baseURL = `${window.location.origin}/photos-index-page-1-aid-${id}.html`;
             this.galleryURL = `${window.location.origin}/photos-gallery-aid-${id}.html`;
@@ -1876,6 +1876,38 @@
             if (!match) return void 0;
             return match[1];
         }
+        /**
+         * 获取章节chid：优先从页面dom提取，失败再走url解析
+         * @returns {string|undefined} chid
+         */
+        extractIDFromChid(href) {
+            // 1. 判断是否存在 dv-section 元素
+            const dvSectionEl = document.querySelector('.dv-section');
+            if (!dvSectionEl) {
+                // dom不存在，走url解析兜底
+                console.log('没有.dv-section:');
+                return extractIDFromHref(href);
+            }
+
+            // 2. 优先取 class=cur 的 li 的 data‑chid
+            let curLi = dvSectionEl.querySelector('li.cur');
+            if (curLi) {
+                const chid = curLi.getAttribute('data-chid');
+                console.log('curchid:' + chid);
+                if (chid) return chid;
+            }
+
+            // 3. cur找不到，取ul下第一个li做兜底
+            const firstLi = dvSectionEl.querySelector('ul li:first-child');
+            if (firstLi) {
+                const chid = firstLi.getAttribute('data-chid');
+                console.log('firstchid:' + chid);
+                if (chid) return chid;
+            }
+            // DOM全部提取失败，回退url解析
+            return extractIDFromHref(href);
+        }
+
         pasrseGalleryMeta(doc) {
             const title = doc.querySelector("#bodywrap > h2")?.textContent || "unknown";
             const meta = new GalleryMeta(this.baseURL || window.location.href, title);
