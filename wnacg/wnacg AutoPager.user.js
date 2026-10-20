@@ -3,7 +3,7 @@
 // @name:zh-CN   榜单 / 列表 / 搜索 自动滚动加载下一页
 // @namespace    绅士漫画
 // @icon         https://wnacg.com/favicon.ico
-// @version      2026-10-20 02:35:12
+// @version      2026-10-20 17:05:23
 // @description  支持排行页、专辑列表页、搜索页，排除分类项，滚动到剩余10%自动加载下一页，模拟安卓UA
 // @author       You
 // @match        https://*.wnacg.ru/*
@@ -68,7 +68,7 @@
         // 2. 专辑列表页 / 搜索页（共用 #classify_container 容器）
         const classifyBox = document.getElementById('classify_container');
         if (classifyBox) {
-            const isSearch = location.href.includes('/q/');
+            const isSearch = location.href.includes('/search/');
             return {
                 type: isSearch ? 'search' : 'albums',
                 listContainer: classifyBox,
