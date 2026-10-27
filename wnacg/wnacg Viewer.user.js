@@ -2,14 +2,49 @@
 // @name               wnacg Viewer
 // @name:zh-CN         wnacg Viewer
 // @namespace          绅士漫画
-// @version            4.18.0
+// @version            4.18.1
 // @author
-// @description        
+// @description
 // @description:en     Manga Viewer + Downloader, Focus on experience and low load on the site. Support you in finding the site you are searching for.
 // @description:zh-CN  漫画阅读 + 下载器，注重体验和对站点的负载控制。支持你正在搜索的站点。
 // @license            MIT
 // @supportURL
-// @match              *://*/*
+// @match        https://*.wnacg.ru/*
+// @match        https://*.wnacg.com/*
+// @match        https://www.wn04.ru/*
+// @match        https://www.wn05.ru/*
+// @match        https://www.wnacg05.cc/*
+// @match        https://www.wn06.ru/*
+// @match        https://www.wn07.ru/*
+// @match        https://www.wn01.cfd/*
+// @match        https://www.wn01.shop/*
+// @match        https://www.wn02.cfd/*
+// @match        https://www.wn02.shop/*
+// @match        https://www.wn03.cfd/*
+// @match        https://www.wn03.shop/*
+// @match        https://www.wn04.cfd/*
+// @match        https://www.wn04.shop/*
+// @match        https://www.wn03.shop/*
+// @match        https://www.wn04.cfd/*
+// @match        https://www.wn04.shop/*
+// @match        https://www.wn05.cfd/*
+// @match        https://www.wn05.shop/*
+// @match        https://www.wn08.ru/*
+// @match        https://www.wn06.cfd/*
+// @match        https://www.wn06.shop/*
+// @match        https://www.wn07.cfd/*
+// @match        https://www.wn07.shop/*
+// @match        https://www.wn08.cfd/*
+// @match        https://www.wn08.shop/*
+// @match        https://www.wn09.cfd/*
+// @match        https://www.wn09.shop/*
+// @match        https://www.wn10.cfd/*
+// @match        https://www.wn10.shop/*
+// @match        https://www.wn001.cfd/*
+// @match        https://www.wn002.cfd/*
+// @match        https://www.wn003.cfd/*
+// @match        https://www.wn004.cfd/*
+// @icon         https://wnacg.com/favicon.ico
 // @require            https://cdn.jsdelivr.net/npm/@zip.js/zip.js@2.8.23/dist/zip.min.js
 // @require            https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js
 // @require            https://cdn.jsdelivr.net/npm/pica@9.0.1/dist/pica.min.js
@@ -1871,43 +1906,37 @@
         galleryMeta(chapter) {
             return this.meta || super.galleryMeta(chapter);
         }
-        extractIDFromHref(href) {
-            const match = href.match(/-(\d+).html$/);
-            if (!match) return void 0;
-            return match[1];
-        }
         /**
-         * 获取章节chid：优先从页面dom提取，失败再走url解析
+         * 获取章节chid：优先DOM提取，DOM提取失败再通过URL解析兜底
+         * @param {string} href
          * @returns {string|undefined} chid
          */
         extractIDFromChid(href) {
-            // 1. 判断是否存在 dv-section 元素
-            const dvSectionEl = document.querySelector('.dv-section');
-            if (!dvSectionEl) {
-                // dom不存在，走url解析兜底
-                console.log('没有.dv-section:');
-                return extractIDFromHref(href);
+            const sectionEl = document.querySelector('.dv-section');
+
+            if (sectionEl) {
+                // 优先级1：当前选中章节 li.cur 的 data-chid
+                const curItem = sectionEl.querySelector('li.cur');
+                if (curItem?.dataset.chid) {
+                    console.log('取自 cur li 的 chid：', curItem.dataset.chid);
+                    return curItem.dataset.chid;
+                }
+
+                // 优先级2：章节列表第一个li的 data-chid
+                const firstItem = sectionEl.querySelector('ul li:first-child');
+                if (firstItem?.dataset.chid) {
+                    console.log('取自首个 li 的 chid：', firstItem.dataset.chid);
+                    return firstItem.dataset.chid;
+                }
+                console.log('DOM内未找到可用chid，使用URL解析兜底');
+            } else {
+                console.log('未找到 .dv-section，使用URL解析兜底');
             }
 
-            // 2. 优先取 class=cur 的 li 的 data‑chid
-            let curLi = dvSectionEl.querySelector('li.cur');
-            if (curLi) {
-                const chid = curLi.getAttribute('data-chid');
-                console.log('curchid:' + chid);
-                if (chid) return chid;
-            }
-
-            // 3. cur找不到，取ul下第一个li做兜底
-            const firstLi = dvSectionEl.querySelector('ul li:first-child');
-            if (firstLi) {
-                const chid = firstLi.getAttribute('data-chid');
-                console.log('firstchid:' + chid);
-                if (chid) return chid;
-            }
-            // DOM全部提取失败，回退url解析
-            return extractIDFromHref(href);
+            // 容器不存在 或者 DOM里没拿到chid，统一走到这里兜底
+            const matched = href.match(/-(\d+)\.html$/);
+            return matched?.[1];
         }
-
         pasrseGalleryMeta(doc) {
             const title = doc.querySelector("#bodywrap > h2")?.textContent || "unknown";
             const meta = new GalleryMeta(this.baseURL || window.location.href, title);
