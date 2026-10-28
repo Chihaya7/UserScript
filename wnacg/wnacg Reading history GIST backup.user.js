@@ -2,8 +2,8 @@
 // @name         wnacg Reading history GIST backup
 // @name:zh-CN   绅士漫画已读记录-移动端
 // @namespace    绅士漫画
-// @version      2026-10-20 17:05:36
-// @description  仅支持移动端，自动记录已读漫画 + IndexedDB + 实时变灰 + 页面新增统计 + Gist 每日同步 + 阅读日期显示 + 搜索页支持 + 历史记录页
+// @version      2026-10-28 16:47:08
+// @description  仅支持移动端，自动记录已读漫画 + IndexedDB + 实时变灰 + 页面新增统计 + Gist 每日同步 + 阅读日期显示 + 搜索页支持 + 历史记录面板 + 历史面板单条删除(延迟同步方案B)
 // @icon         https://wnacg.com/favicon.ico
 // @match        https://*.wnacg.ru/*
 // @match        https://*.wnacg.com/*
@@ -124,11 +124,44 @@
         });
     }
 
+
+    // =========================
+    // 【新增】单条删除本地记录
+    // =========================
+    function deleteComicLocal(id) {
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(STORE, 'readwrite');
+            const store = tx.objectStore(STORE);
+            const req = store.delete(id);
+            req.onerror = (e) => {
+                e.preventDefault();
+                reject(req.error);
+            };
+            tx.oncomplete = () => resolve();
+        });
+    }
+
+    // =========================
+    // 【新增】pendingDelete meta辅助函数
+    // =========================
+    async function getPendingDelete() {
+        return (await getMeta('pendingDelete')) || {};
+    }
+
+    async function setPendingDeleteItem(id, delTs) {
+        const pd = await getPendingDelete();
+        pd[id] = delTs;
+        await setMeta('pendingDelete', pd);
+    }
+    async function clearPendingDelete() {
+        await setMeta('pendingDelete', {});
+    }
+
+
     // =========================
     // 获取全部漫画记录（Gist 同步用，不排序）
     // @returns {Promise<Array<{id, title, ts, coverPath}>>}
     // =========================
-
     function getAllRecords() {
         return new Promise((resolve, reject) => {
             const req = db.transaction(STORE, 'readonly').objectStore(STORE).getAll();
@@ -136,7 +169,6 @@
             req.onerror = () => reject(req.error);
         });
     }
-
     // =========================
     // 批量查询指定 id 列表（Promise.all 并发，同一事务）
     // 比 getAllRecords 更高效：只读页面上存在的漫画，不读全量数据
@@ -145,7 +177,6 @@
     // @param {number[]} ids
     // @returns {Promise<Array<{id, title, ts, coverPath}|null>>}
     // =========================
-
     function queryByIds(ids) {
         if (ids.length === 0) return Promise.resolve([]);
         const store = db.transaction(STORE, 'readonly').objectStore(STORE);
@@ -157,7 +188,6 @@
             }))
         );
     }
-
     // =========================
     // 新增或更新一条漫画记录
     // put 语义：id 已存在则覆盖（更新 ts/coverPath），不存在则插入
@@ -167,7 +197,6 @@
     // @param {string} coverPath - 封面路径段（不含域名前缀）
     // @returns {Promise<number>} 本次写入的毫秒时间戳 ts
     // =========================
-
     function saveComic(id, title, coverPath) {
         const ts = Math.max(Date.now(), lastTs + 1);
         lastTs = ts;
@@ -178,13 +207,11 @@
             req.onerror = () => reject(req.error);
         });
     }
-
     // =========================
     // 获取数据库漫画总数
     // 仅在 init 时调用一次，之后由内存变量 totalCount 维护
     // @returns {Promise<number>}
     // =========================
-
     function getCount() {
         return new Promise((resolve, reject) => {
             const req = db.transaction(STORE, 'readonly').objectStore(STORE).count();
@@ -192,14 +219,11 @@
             req.onerror = () => reject(req.error);
         });
     }
-
     // =========================
     // 批量写入漫画记录（云端恢复用）
-    // add 语义：id 已存在（主键冲突）时跳过，保留本地原有数据
     // 已改为put
     // @param {Array<{id, title, ts, coverPath}>} records
     // =========================
-
     // function saveBatch(records) {
     //     return new Promise((resolve, reject) => {
     //         const tx = db.transaction(STORE, 'readwrite');
@@ -222,7 +246,6 @@
             const store = tx.objectStore(STORE);
             // 记录失败ID，用于debug
             const failIds = [];
-
             records.forEach(r => {
                 const req = store.put({
                     id: r.id,
@@ -252,11 +275,9 @@
             };
         });
     }
-
     // =========================
     // 清空本地 read 表所有记录
     // =========================
-
     function clearAll() {
         return new Promise((resolve, reject) => {
             const req = db.transaction(STORE, 'readwrite').objectStore(STORE).clear();
@@ -264,34 +285,28 @@
             req.onerror = () => reject(req.error);
         });
     }
-
     // =========================
     // 将毫秒时间戳转为 "YYYY-MM-DD" 字符串（本地时间）
     // @param {number} ts - 毫秒时间戳
     // @returns {string}
     // =========================
-
     function tsToDate(ts) {
         if (!ts) return '';
         const d = new Date(ts);
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     }
-
     // 获取今天的日期字符串，供 Gist 同步和 meta 更新判断用
     function today() { return tsToDate(Date.now()); }
-
     // =========================
     // 从 URL 中提取漫画 id（数字）
     // 匹配 aid-{数字} 格式
     // @param {string} url
     // @returns {number|null}
     // =========================
-
     function extractId(url) {
         const m = url?.match(/aid-(\d+)/);
         return m ? Number(m[1]) : null;
     }
-
     // =========================
     // 从封面完整 URL 中提取"数字路径段"（不含域名）
     // 取路径末尾三段数字 + 后缀，不依赖固定路径前缀，适配域名或路径结构变化
@@ -300,7 +315,6 @@
     // @param {string} url - 封面完整 URL
     // @returns {string} 路径段，失败返回空串
     // =========================
-
     function extractCoverPath(url) {
         if (!url) return '';
         try {
@@ -310,25 +324,21 @@
             return `data/t/${nums.slice(-3).join('/')}.${u.pathname.split('.').pop()}`;
         } catch { return ''; }
     }
-
     // =========================
     // 从封面完整 URL 中提取域名前缀（协议 + 域名）
     // 例：https://t4.wnacgimg.date/... → "https://t4.wnacgimg.date"
     // @param {string} url
     // @returns {string} 域名前缀，失败返回空串
     // =========================
-
     function extractHost(url) {
         try { return new URL(url).origin; } catch { return ''; }
     }
-
     // =========================
     // 每日更新封面域名前缀（coverHost）
     // 先用内存标记 hostUpdated 判断，已更新过直接跳过，避免每次点击都读 meta
     // 再对比 meta 中的上次更新日期，每日仅写入一次
     // @param {string} coverUrl - 封面完整 URL（从页面中提取）
     // =========================
-
     async function refreshHostIfNeeded(coverUrl) {
         if (hostUpdated) return;
         const lastDate = await getMeta('coverHostDate');
@@ -339,20 +349,16 @@
         await setMeta('coverHostDate', today());
         hostUpdated = true;
     }
-
     // =========================
     // 获取 meta 中存储的封面域名前缀
     // @returns {Promise<string>} 如 "https://t4.wnacgimg.date"，未存储返回空串
     // =========================
-
     async function getCoverHost() {
         return (await getMeta('coverHost')) || '';
     }
-
     // =========================
     // 注入已读相关样式（含历史记录面板样式）
     // =========================
-
     function addStyle() {
         const s = document.createElement('style');
         s.innerHTML = /*css*/`
@@ -366,7 +372,6 @@
         .wn-read a:visited { color: #0000FF !important; }
         .wn-read-link { color: #777 !important; }
         .wn-read-link:visited { color: #555 !important; }
-
         /* 阅读日期标签 */
         .wn-date {
             display: block !important;
@@ -400,11 +405,9 @@
         #wn-stats:hover {
             background:#d0e4ff;
         }
-
         .OperaBar{
             margin-right:2px;
         }
-
         /* ── 历史记录面板 ── */
         #wn-hist-panel {
             display: none;
@@ -416,7 +419,6 @@
             right:0;
             position:absolute;
         }
-
         /* 历史记录每行：封面 + 信息 */
         .wn-hist-item {
             display: flex;
@@ -429,7 +431,6 @@
             color: inherit;
         }
         .wn-hist-item:active { background: #f5f5f5; }
-
         /* 封面图 */
         .wn-hist-cover {
             width: 56px;
@@ -439,7 +440,6 @@
             background: #eee;
             flex-shrink: 0;
         }
-
         /* 封面占位（加载失败 / 无封面） */
         .wn-hist-no-cover {
             width: 56px;
@@ -453,7 +453,6 @@
             font-size: 11px;
             color: #aaa;
         }
-
         .wn-hist-info { flex: 1; overflow: hidden; }
         .wn-hist-title {
             font-size: 14px;
@@ -463,7 +462,6 @@
             text-overflow: ellipsis;
         }
         .wn-hist-date { font-size: 12px; color: #aaa; margin-top: 4px; }
-
         /* 分页器 */
         #wn-hist-pager {
             display: flex;
@@ -498,17 +496,14 @@
     `;
         document.head.appendChild(s);
     }
-
     // =========================
     // 将指定元素标记为已读（整体变灰，链接变色）
     // =========================
-
     function markRead(el) {
         if (!el) return;
         el.classList.add('wn-read');
         el.querySelectorAll('a').forEach(a => a.classList.add('wn-read-link'));
     }
-
     // =========================
     // 在指定元素附近插入阅读日期 a，防止重复插入
     // inside=true  → appendChild 到目标元素内部末尾（默认）
@@ -518,7 +513,6 @@
     // @param {number}  ts      - 毫秒时间戳（显示为日期字符串）
     // @param {boolean} inside  - 插入位置模式
     // =========================
-
     function showDate(parent, sel, ts, inside = true) {
         if (!ts) return;
         const target = parent.querySelector(sel);
@@ -531,23 +525,19 @@
         a.textContent = tsToDate(ts);
         inside ? target.appendChild(a) : target.insertAdjacentElement('afterend', a);
     }
-
     // =========================
     // 更新顶部统计栏
     // 直接读内存变量 totalCount / addedCount，不查数据库
     // =========================
-
     function updateStats() {
         const el = document.getElementById('wn-stats');
         if (!el) return;
         el.innerHTML = `${totalCount} | ${addedCount}`;
     }
-
     // =========================
     // 在页面 header 中插入统计栏
     // 点击统计栏显示历史面板
     // =========================
-
     async function createStats() {
         const header = document.querySelector('.header');
         if (!header) return;
@@ -560,7 +550,6 @@
         header.appendChild(el);
         updateStats();
     }
-
     // =========================
     // 通用点击处理：保存记录、更新内存状态、触发回调、刷新统计栏
     // 抽出三个页面处理函数（albums / search / ranking）中重复的点击逻辑
@@ -569,7 +558,6 @@
     // @param {Function} getCoverUrl - 无参函数，返回封面完整 URL
     // @param {Function} onSaved     - 保存成功后的回调 (ts) => void，负责调用 markRead / showDate
     // =========================
-
     async function handleClick(id, title, getCoverUrl, onSaved) {
         const coverUrl = getCoverUrl();
         if (coverUrl) await refreshHostIfNeeded(coverUrl);
@@ -582,22 +570,18 @@
         onSaved(ts);
         updateStats();
     }
-
     // =========================
     // 数据管理 UI（全部删除 / 全部上传）
     // =========================
-
     function createMgmtUI() {
         const classBox = document.querySelector('.TabBar .classBox');
         if (!classBox) return;
         const classTit = classBox.querySelector('#classTit');
         if (!classTit) return;
-
         // 添加「数据管理」tab
         const li = document.createElement('li');
         li.innerHTML = '<a href="javascript:void(0)" id="wn-mgmt-tab">数据管理</a>';
         classTit.appendChild(li);
-
         const panel = document.createElement('div');
         panel.id = 'wn-mgmt-panel';
         panel.style.cssText = 'display:none;padding:12px 10px;background:#fff;border-top:1px solid #eee;z-index:99;position: relative; ';
@@ -609,7 +593,6 @@
             <div id="wn-mgmt-msg" style="margin-top:10px;font-size:13px;color:#888;min-height:20px;line-height:1.6;"></div>
         `;
         classBox.appendChild(panel);
-
         // tab 点击切换显示/隐藏，同时收起历史面板
         li.querySelector('#wn-mgmt-tab').addEventListener('click', () => {
             const v = panel.style.display !== 'none';
@@ -617,7 +600,6 @@
             const hp = document.getElementById('wn-hist-panel');
             if (hp) hp.style.display = 'none';
         });
-
         // ── 全部删除 ──
         document.getElementById('wn-btn-del').addEventListener('click', async () => {
             const msg = document.getElementById('wn-mgmt-msg');
@@ -635,7 +617,6 @@
                 msg.textContent = '❌ 删除失败：' + e.message;
             }
         });
-
         // ── 全部上传 ──
         document.getElementById('wn-btn-push').addEventListener('click', async () => {
             const msg = document.getElementById('wn-mgmt-msg');
@@ -653,27 +634,22 @@
             }
         });
     }
-
     // =========================
     // fav页面历史记录 UI创建
     // =========================
-
     function createFavHistUI() {
         const classBox = document.querySelector('.TabBar .classBox');
         if (!classBox) return;
         const classTit = classBox.querySelector('#classTit');
         if (!classTit) return;
-
         // 添加「历史记录」tab
         const li = document.createElement('li');
         li.innerHTML = '<a href="javascript:void(0)" id="wn-hist-tab">历史记录</a>';
         classTit.appendChild(li);
-
         li.querySelector('#wn-hist-tab').addEventListener('click', () => {
             toggleHistPanel(classBox, 'beforeend');
         });
     }
-
     /**
      * 创建历史面板
      * 通用切换历史面板入口
@@ -682,26 +658,21 @@
     async function toggleHistPanel(refEl, position) {
         let hp = document.getElementById('wn-hist-panel');
         let mp = document.getElementById('wn-mgmt-panel');
-
         if (!hp) {
             hp = document.createElement('div');
             hp.id = 'wn-hist-panel';
             hp.innerHTML = '<div id="wn-hist-list"></div><div id="wn-hist-pager"></div>';
-
             refEl.insertAdjacentElement(position, hp);
         }
-
         const isShow = hp.style.display !== 'none' && hp.style.display !== '';
         if (isShow) {
             hp.style.display = 'none';
             return;
         }
-
         hp.style.display = 'block';
         if (mp) mp.style.display = 'none';
         await renderHistPage(1);
     }
-
     // =========================
     // 用 idx_ts 游标按时间倒序读取指定分页的记录
     // 通过 advance(offset) 跳过前面页的数据，只读 size 条，不加载全量数据
@@ -710,7 +681,6 @@
     // @param {number} size   - 每页条数
     // @returns {Promise<Array<{id, title, ts, coverPath}>>}
     // =========================
-
     function readPageByTs(offset, size) {
         return new Promise((resolve, reject) => {
             const idx = db.transaction(STORE, 'readonly').objectStore(STORE).index('idx_ts');
@@ -734,51 +704,92 @@
             req.onerror = () => reject(req.error);
         });
     }
-
     // =========================
     // 渲染历史记录指定页
     // 用内存中的 totalCount 计算总页数，避免重复 count 查库
     // @param {number} page - 目标页码（从 1 开始）
     // =========================
-
     async function renderHistPage(page) {
         const PAGE = 10;
         const listEl = document.getElementById('wn-hist-list');
         const pagerEl = document.getElementById('wn-hist-pager');
         if (!listEl || !pagerEl) return;
-
-
         if (totalCount === 0) {
             listEl.innerHTML = '<div style="padding:12px;color:#aaa;font-size:13px;">暂无记录</div>';
             return;
         }
-
         const totalPages = Math.ceil(totalCount / PAGE);
         const cur = Math.max(1, Math.min(page, totalPages));
         const slice = await readPageByTs((cur - 1) * PAGE, PAGE);
         const host = await getCoverHost();
-
         // 构建列表（离屏fragment）
         const listFrag = document.createDocumentFragment();
         slice.forEach(r => {
             const coverUrl = (host && r.coverPath) ? `${host}/${r.coverPath}` : '';
             const comicUrl = `https://${location.hostname}/photos-index-aid-${r.id}.html`;
 
-            // 行容器：<a> 标签，点击先更新 ts 再跳转
-            const item = document.createElement('a');
+            const item = document.createElement('div');
             item.className = 'wn-hist-item';
-            item.href = comicUrl;
 
-            // 封面图或占位块（两处复用 noCover()）
+            const linkWrap = document.createElement('a');
+            linkWrap.href = comicUrl;
+            linkWrap.style.flex = "1";
+            linkWrap.style.display = "flex";
+            linkWrap.style.gap = "10px";
+            linkWrap.style.alignItems = "center";
+
+            const delBtn = document.createElement('button');
+            delBtn.textContent = "x";
+            delBtn.style.cssText = `
+                border:none; background:#f44336; color:#fff;
+                border-radius:4px; padding:4px 8px; cursor:pointer;
+                flex-shrink:0;
+            `;
+            delBtn.addEventListener('click', async (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                if (isSyncing) {
+                    alert("正在Gist同步中，请稍后操作");
+                    return;
+                }
+                if (!confirm(`确定删除阅读记录：${r.title || '未知标题'}？\n云端将在下一次自动同步完成删除。`)) return;
+                const comicId = r.id;
+                try {
+                    delBtn.disabled = true;
+                    delBtn.textContent = "处理中…";
+                    const results = await queryByIds([comicId]);
+                    const oldRec = results[0];
+                    if (!oldRec) {
+                        alert("记录不存在");
+                        return;
+                    }
+
+                    await deleteComicLocal(comicId);
+                    readSet.delete(comicId);
+                    totalCount = Math.max(0, totalCount - 1);
+                    addedCount = Math.max(0, addedCount - 1);
+                    await setPendingDeleteItem(comicId, Math.max(Date.now(), lastTs + 1));
+                    item.remove();
+                    updateStats();
+                } catch (err) {
+                    alert("删除失败：" + err.message);
+                } finally {
+                    delBtn.disabled = false;
+                    delBtn.textContent = "x";
+                }
+            });
+
+
+
             if (coverUrl) {
                 const img = document.createElement('img');
                 img.className = 'wn-hist-cover';
                 img.src = coverUrl;
                 img.alt = r.title;
                 img.onerror = () => img.replaceWith(noCover());
-                item.appendChild(img);
+                linkWrap.appendChild(img);
             } else {
-                item.appendChild(noCover());
+                linkWrap.appendChild(noCover());
             }
 
             const info = document.createElement('div');
@@ -787,39 +798,38 @@
                 <div class="wn-hist-title">${r.title || '未知标题'}</div>
                 <div class="wn-hist-date">${tsToDate(r.ts)}</div>
             `;
-            item.appendChild(info);
+            linkWrap.appendChild(info);
 
-            // 点击历史条目：更新 ts（使其排到历史最前），然后跳转
-            item.addEventListener('click', async e => {
+            item.appendChild(linkWrap);
+            item.appendChild(delBtn);
+
+            linkWrap.addEventListener('click', async e => {
                 e.preventDefault();
                 try { await saveComic(r.id, r.title, r.coverPath); } catch { }
                 location.href = comicUrl;
             });
+
             listFrag.appendChild(item);
         });
+
         // 原子替换列表
         listEl.replaceChildren(listFrag);
-
         // ========== 分页器：传入fragment，在内存构建，不操作真实DOM ==========
         const pageFrag = document.createDocumentFragment();
         renderPager(pageFrag, cur, totalPages);
         // 一次性替换页面上分页器全部子节点
         pagerEl.replaceChildren(pageFrag);
     }
-
     // =========================
     // 创建封面占位块（加载失败 / 无封面时使用）
     // 抽成函数避免两处重复创建相同结构
     // =========================
-
     function noCover() {
         const d = document.createElement('div');
         d.className = 'wn-hist-no-cover';
         d.textContent = '无封面';
         return d;
     }
-
-
     /**
      * 渲染分页器按钮
      * 显示「上一页」「页码」「下一页」，超过 7 页时做省略号折叠
@@ -850,7 +860,6 @@
         });
         if (cur < total) el.appendChild(btn('›', cur + 1));
     }
-
     // =========================
     // 构建分页器页码数组，超出范围用 '...' 代替
     // 最多显示：首页、末页、当前页前后各 1 页，共 7 个可见项
@@ -858,7 +867,6 @@
     // @param {number} total - 总页数
     // @returns {Array<number|string>}
     // =========================
-
     function buildPageRange(cur, total) {
         // 总页数少，全部直接显示
         if (total <= 10) {
@@ -884,13 +892,11 @@
         });
         return result;
     }
-
     // =========================
     // 从 Gist 拉取云端数据
     // 格式：{ id: { title, ts, coverPath } }
     // @returns {Promise<Array<{id, title, ts, coverPath}>>}
     // =========================
-
     function fetchGist() {
         return fetch(`https://api.github.com/gists/${GIST_ID}`, {
             headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3+json' },
@@ -904,13 +910,11 @@
                 }));
             });
     }
-
     // =========================
     // 将漫画记录上传到 Gist
     // 格式：{ id: { title, ts, coverPath } }
     // @param {Array<{id, title, ts, coverPath}>} records
     // =========================
-
     function pushGist(records) {
         const data = {};
         records.forEach(r => { data[r.id] = { title: r.title || '', ts: r.ts || 0, coverPath: r.coverPath || '' }; });
@@ -925,13 +929,6 @@
         });
     }
 
-    // =========================
-    // 每日同步逻辑（Gist ↔ 本地 IndexedDB）
-    // 每天第一次打开时执行：
-    //   云端独有 → 写入本地，更新 readSet 和 totalCount
-    //   本地独有 → 推送合并到云端
-    //   一致     → 无操作
-    // =========================
 
     // 同步锁标识，防止并发执行
     let isSyncing = false;
@@ -955,66 +952,87 @@
 
         try {
             console.log('[wn] 开始每日同步...');
-            // 拉取两边全量数据
-            const cloud = await fetchGist();
-            const local = await getAllRecords();
-            const cloudMap = new Map(cloud.map(item => [item.id, item]));
-            const localMap = new Map(local.map(item => [item.id, item]));
+            // 拉取两边全量数据 + 读取待删除指令
+            const cloudRawRecords = await fetchGist();
+            const localRecords = await getAllRecords();
+            const pendingDeleteMap = await getPendingDelete();
 
-            // 1. 云端独有：本地不存在，下载到本地
-            const fromCloud = cloud.filter(r => !localMap.has(r.id));
-            // 2. 本地独有：云端不存在，需要上传
-            const toCloud = local.filter(r => !cloudMap.has(r.id));
-            //console.log('[wn] 待上传toCloud完整列表：', JSON.parse(JSON.stringify(toCloud)));
-            // 3. 两边都存在的ID：冲突数据，按更新时间覆盖
-            const conflictList = [];
-            const cloudKeep = [];
-            for (const [cid, cloudItem] of cloudMap) {
-                if (!localMap.has(cid)) {
-                    //仅云端有 → cloudKeep
-                    cloudKeep.push(cloudItem);
+            const localMap = new Map(localRecords.map(r => [r.id, r]));
+            const cloudMap = new Map(cloudRawRecords.map(r => [r.id, r]));
+
+            const needPushFromLocal = []; // 本地独有 / 本地ts > 云端ts（本地变更，上传）
+            const consensusList = [];     // ts相等共识基线：仅用于上传，不写入本地
+            const toWriteLocalList = [];  // 云端ts更大 / 云端独有：需要写入本地（待过滤pendingDelete）
+
+            // 主轴遍历本地记录
+            for (const [id, localRec] of localMap) {
+                const cloudRec = cloudMap.get(id);
+                if (!cloudRec) {
+                    // 本地独有
+                    needPushFromLocal.push(localRec);
                     continue;
                 }
-                const localItem = localMap.get(cid);
-                if (cloudItem.ts > localItem.ts) {
-                    //云端 ts 更大 → conflictList + cloudKeep
-                    conflictList.push(cloudItem);
-                    cloudKeep.push(cloudItem);
-                } else if (localItem.ts > cloudItem.ts) {
-                    //本地 ts 更大 → toCloud，丢弃云端旧数据
-                    toCloud.push(localItem);
+
+                if (localRec.ts > cloudRec.ts) {
+                    // 本地版本更新，本地胜出，上传
+                    needPushFromLocal.push(localRec);
+                } else if (cloudRec.ts > localRec.ts) {
+                    // 云端版本更新，拉取写入本地
+                    toWriteLocalList.push(cloudRec);
                 } else {
-                    // ts 完全相等，版本一致，保留云端记录
-                    cloudKeep.push(cloudItem);
+                    // ts完全相等，共识基线，只进上传包，不写本地DB
+                    consensusList.push(localRec);
                 }
+                cloudMap.delete(id);
             }
 
-            // 本地写入 云端新增 + 云端更新冲突数据到本地
-            const needSave = [...fromCloud, ...conflictList];
-            //console.log('[wn] needSave完整列表：', JSON.parse(JSON.stringify(needSave)));
-            if (needSave.length > 0) {
-                await saveBatch(needSave);
-                // 加入已读集合
-                fromCloud.forEach(r => readSet.add(r.id));
-                totalCount += fromCloud.length;
+            // cloudMap剩余条目 = 云端独有记录
+            for (const [id, rec] of cloudMap) {
+                toWriteLocalList.push(rec);
             }
 
-            // 构造完整最新数据集：云端原有数据 + 本地新增/更新 
-            const finalUploadData = [...cloudKeep, ...toCloud];
-            if (toCloud.length > 0) {
-                console.log('finalUploadData', JSON.parse(JSON.stringify(finalUploadData)));
-                await pushGist(finalUploadData);
+            // pendingDelete过滤：仅过滤来自云端的待写入列表
+            const toWriteFiltered = toWriteLocalList.filter(rec => {
+                const delTs = pendingDeleteMap[rec.id];
+                return delTs === undefined || rec.ts > delTs;
+            });
+
+            // 组装最终全量上传包
+            const finalUploadRecords = [...needPushFromLocal, ...consensusList, ...toWriteFiltered];
+            const finalWriteLocal = toWriteFiltered;
+
+            console.log(`[wn] 同步统计摘要：本地总${localRecords.length} | 云端原始${cloudRawRecords.length} | 本地上传变更${needPushFromLocal.length} | 共识基线保留${consensusList.length} | 云端拉取写入${toWriteFiltered.length} | 最终上传包${finalUploadRecords.length} | 本地入库${finalWriteLocal.length}`);
+            console.log("[wn] 同步统计详情", {
+                localTotal: localRecords.length,
+                cloudRawTotal: cloudRawRecords.length,
+                localChangePush: needPushFromLocal.length,
+                consensusKeep: consensusList.length,
+                cloudPullWrite: toWriteFiltered.length,
+                uploadTotal: finalUploadRecords.length,
+                localWriteCount: finalWriteLocal.length
+            });
+            // 本地批量写入
+
+            if (finalWriteLocal.length > 0) {
+                await saveBatch(finalWriteLocal);
+                // 同步更新内存状态：新增云端过来的id加入readSet，更新totalCount
+                finalWriteLocal.forEach(r => readSet.add(r.id));
+                totalCount += finalWriteLocal.length;
             }
 
-            // 同步全部流程无异常，才标记今日同步完成
+            // 执行Gist全量覆盖上传
+            await pushGist(finalUploadRecords);
+
+            // --------全部IO成功之后才执行下面的状态变更--------
+            // 清空待删除指令（meta中pendingDelete对象置空）
+            await clearPendingDelete();
+            // 标记今日同步已完成
             await setMeta('lastSync', todayStr);
-            // 同步成功后，记录当前本地总数作为基线，未同步计数归零
+            // 记录同步基线计数，重置新增计数
             await setMeta('lastSyncCount', totalCount);
             addedCount = 0;
             syncSuccess = true;
-            console.log(`[wn] 同步完成 | 本地${localMap.size}，云端${cloudMap.size} | 
-                本地新增：${fromCloud.length}条，更新本地：${conflictList.length}条，总计${needSave.length}条。
-                云端保留：${cloudKeep.length}条，上传云端：${toCloud.length}条，总计${finalUploadData.length}条。`);
+
         } catch (e) {
             console.warn('[wn] 同步失败，今日不会标记同步完成，下次会重试', { error: e });
             syncSuccess = false;
@@ -1027,6 +1045,8 @@
         return syncSuccess;
     }
 
+
+
     // =========================
     // 处理 albums 漫画列表页
     // 封面链接在 .ImgA，标题在 .txtA
@@ -1035,7 +1055,6 @@
     function processAlbums(elements) {
         const items = [];
         const targetElements = elements || document.querySelectorAll('#classify_container > li:not(.cate-0)');
-
         targetElements.forEach(li => {
             // 跳过已处理元素，避免重复绑定事件
             if (li.classList.contains('wn-processed')) return;
@@ -1046,7 +1065,6 @@
             items.push({ li, imgA, id, title: li.querySelector('.txtA')?.textContent.trim() || '' });
             li.classList.add('wn-processed');
         });
-
         // 批量查询已读记录，标记页面上已读的漫画
         queryByIds(items.map(it => it.id)).then(results => {
             results.forEach((rec, i) => {
@@ -1057,7 +1075,6 @@
                 showDate(li, '.txtA', rec.ts);
             });
         });
-
         // 绑定点击事件，点击后保存记录并标记已读
         items.forEach(({ li, imgA, id, title }) => {
             li.querySelectorAll('.ImgA, .txtA').forEach(a => {
@@ -1069,8 +1086,6 @@
             });
         });
     }
-
-
     // =========================
     // 处理搜索结果页
     // 封面链接在 .ImgA，标题在 .ImgA span
@@ -1079,7 +1094,6 @@
     function processSearch(elements) {
         const items = [];
         const targetElements = elements || document.querySelectorAll('#classify_container>li');
-
         targetElements.forEach(li => {
             // 跳过已处理元素，避免重复绑定事件
             if (li.classList.contains('wn-processed')) return;
@@ -1090,9 +1104,7 @@
             items.push({ li, imgA, id, title: imgA.querySelector('span')?.textContent.trim() || '' });
             li.classList.add('wn-processed');
         });
-
         if (items.length === 0) return;
-
         queryByIds(items.map(it => it.id)).then(results => {
             results.forEach((rec, i) => {
                 if (!rec) return;
@@ -1102,7 +1114,6 @@
                 showDate(li, '.ImgA span', rec.ts, true);
             });
         });
-
         items.forEach(({ li, imgA, id, title }) => {
             imgA.addEventListener('click', () => handleClick(
                 id, title,
@@ -1111,23 +1122,18 @@
             ));
         });
     }
-
-
     // =========================
     // 处理 ranking 排行页
     // 封面在 .itemImg img，标题在 .itemTxt .title
     // 日期插在 .title 后面（外部兄弟节点模式，inside=false）
     // @param {Array<Element>} elements - 指定要处理的元素，不传则处理全部
     // =========================
-
     function processRanking(elements) {
         const items = [];
         const targetElements = elements || document.querySelectorAll('#topImgCon .itemBox');
-
         targetElements.forEach(box => {
             // 跳过已处理过的元素，避免重复绑定事件
             if (box.classList.contains('wn-processed')) return;
-
             const titleA = box.querySelector('.itemTxt .title');
             if (!titleA) return;
             const id = extractId(titleA.href);
@@ -1136,9 +1142,7 @@
             // 标记为已处理
             box.classList.add('wn-processed');
         });
-
         if (items.length === 0) return;
-
         queryByIds(items.map(it => it.id)).then(results => {
             results.forEach((rec, i) => {
                 if (!rec) return;
@@ -1148,7 +1152,6 @@
                 showDate(box, '.title', rec.ts, false);
             });
         });
-
         items.forEach(({ box, id, title }) => {
             box.querySelectorAll('.itemImg a, .itemTxt .title').forEach(a => {
                 a.addEventListener('click', () => handleClick(
@@ -1159,25 +1162,20 @@
             });
         });
     }
-
-
     // =========================
     // 初始化入口
     // 顺序：注入样式 → 开启DB → 每日Gist同步
     //       → 读取总数到内存 → 统计栏 → 数据管理UI → 历史记录UI → 分发页面处理
     // =========================
-
     async function init() {
         addStyle();
         await openDB();
         totalCount = await getCount(); // 初始化时读一次，之后内存维护，不再查库
         await syncGist();
-
         // 用上次同步时的总数作为基线，计算自上次同步以来的未同步新增数
         // lastSyncCount 不存在（首次使用）时视为 此时云端同步总数totalCount
         const lastSyncCount = (await getMeta('lastSyncCount')) || totalCount;
         addedCount = totalCount - lastSyncCount;
-
         await createStats();
         if (location.href.includes('users_fav')) {
             createMgmtUI();
@@ -1187,11 +1185,9 @@
         // if (document.getElementById('classify_container')) {
         //     location.href.includes('/q/') ? processSearch() : processAlbums();
         // }
-
         if (document.getElementById('classify_container')) {
             const isSearch = location.href.includes('/search/');
             isSearch ? processSearch() : processAlbums();
-
             // 监听列表容器，动态新增元素自动增量处理
             const listContainer = document.getElementById('classify_container');
             if (listContainer) {
@@ -1215,7 +1211,6 @@
         }
         if (location.href.includes('ranking') && document.querySelector('#topImgCon .itemBox')) {
             processRanking();
-
             // 监听动态加载的新元素
             const listContainer = document.querySelector('#topImgCon > .select');
             if (listContainer) {
@@ -1235,9 +1230,6 @@
                 observer.observe(listContainer, { childList: true, subtree: false });
             }
         }
-
-
     }
     init();
-
 })();
