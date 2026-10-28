@@ -2,8 +2,8 @@
 // @name         wnacg Reading history GIST backup
 // @name:zh-CN   绅士漫画已读记录-移动端
 // @namespace    绅士漫画
-// @version      2026-10-28 16:47:08
-// @description  仅支持移动端，自动记录已读漫画 + IndexedDB + 实时变灰 + 页面新增统计 + Gist 每日同步 + 阅读日期显示 + 搜索页支持 + 历史记录面板 + 历史面板单条删除(延迟同步方案B)
+// @version      2026-10-29 03:40:17
+// @description  仅支持移动端，自动记录已读漫画 + IndexedDB + 实时变灰 + 页面新增统计 + Gist 每日同步 +阅读日期显示+搜索页支持+历史记录面板+历史面板单条删除(延迟同步方案B)+历史面板手动立即同步按钮+手动立即同步不受每日一次限制+同步HTTP状态显式校验+本地条数getCount校准
 // @icon         https://wnacg.com/favicon.ico
 // @match        https://*.wnacg.ru/*
 // @match        https://*.wnacg.com/*
@@ -45,42 +45,34 @@
 // @run-at       document-end
 // @grant        none
 // ==/UserScript==
-
 (function () {
     'use strict';
-
     // =========================
     // Gist 配置
     // =========================
-
     const GITHUB_TOKEN = 'gh' + 'p_tCNVAjUBsVpmP0OI973IBdvV3FfmFM1jydou';
     const GIST_ID = '3fe6a98a0c34bbe53678cd47d8d919ac';
     const GIST_FILE = 'wn_read.json';
-
     // =========================
     // 数据库配置
     // read 表：keyPath 为 'id'（漫画 id），字段 ts（毫秒时间戳）、title、coverPath
     //           idx_ts 索引用于历史页游标分页（unique:false，允许极端情况下 ts 相同）
     // meta 表：存储 coverHost（封面域名前缀）等元数据
     // =========================
-
     const DB_NAME = 'WN_READ_DB';
     const STORE = 'read';
     const META = 'meta';
     const DB_VER = 1;
-
     let db = null;
     let readSet = new Set();     // 已读漫画 id 集合，用于 isNew 判断，避免重复计数
     let addedCount = 0;          // 自上次同步以来的新增已读数（跨页面持久化，同步成功后归零）
     let totalCount = 0;          // 数据库总数，初始化时读一次后内存维护，避免每次点击都 count 查库
     let lastTs = 0;              // 上次写入时间戳，保证 ts 单调递增（同一毫秒内多次写入时 +1）
     let hostUpdated = false;     // 封面域名今日是否已更新，内存标记，避免每次点击都读 meta 表
-
     // =========================
     // 打开数据库
     // 首次运行时创建 read 表（主键 id，idx_ts 索引）和 meta 表
     // =========================
-
     function openDB() {
         return new Promise((resolve, reject) => {
             const req = indexedDB.open(DB_NAME, DB_VER);
@@ -95,13 +87,11 @@
             req.onerror = reject;
         });
     }
-
     // =========================
     // 读取 meta 表中的单个值
     // @param {string} key - meta 键名
     // @returns {Promise<any>} 对应的 value，不存在时返回 null
     // =========================
-
     function getMeta(key) {
         return new Promise((resolve, reject) => {
             const req = db.transaction(META, 'readonly').objectStore(META).get(key);
@@ -109,13 +99,11 @@
             req.onerror = () => reject(req.error);
         });
     }
-
     // =========================
     // 写入 meta 表中的单个值
     // @param {string} key   - meta 键名
     // @param {any}    value - 要存储的值
     // =========================
-
     function setMeta(key, value) {
         return new Promise((resolve, reject) => {
             const req = db.transaction(META, 'readwrite').objectStore(META).put({ key, value });
@@ -123,8 +111,6 @@
             req.onerror = reject;
         });
     }
-
-
     // =========================
     // 【新增】单条删除本地记录
     // =========================
@@ -140,14 +126,12 @@
             tx.oncomplete = () => resolve();
         });
     }
-
     // =========================
     // 【新增】pendingDelete meta辅助函数
     // =========================
     async function getPendingDelete() {
         return (await getMeta('pendingDelete')) || {};
     }
-
     async function setPendingDeleteItem(id, delTs) {
         const pd = await getPendingDelete();
         pd[id] = delTs;
@@ -156,8 +140,6 @@
     async function clearPendingDelete() {
         await setMeta('pendingDelete', {});
     }
-
-
     // =========================
     // 获取全部漫画记录（Gist 同步用，不排序）
     // @returns {Promise<Array<{id, title, ts, coverPath}>>}
@@ -221,25 +203,7 @@
     }
     // =========================
     // 批量写入漫画记录（云端恢复用）
-    // 已改为put
-    // @param {Array<{id, title, ts, coverPath}>} records
     // =========================
-    // function saveBatch(records) {
-    //     return new Promise((resolve, reject) => {
-    //         const tx = db.transaction(STORE, 'readwrite');
-    //         const store = tx.objectStore(STORE);
-    //         records.forEach(r => {
-    //             const req = store.put({
-    //                 id: r.id, title: r.title || '',
-    //                 ts: r.ts || 0, coverPath: r.coverPath || '',
-    //             });
-    //             // 忽略单条 add 失败（id 重复时主键冲突），不影响其余条目
-    //             req.onerror = () => { };
-    //         });
-    //         tx.oncomplete = resolve;
-    //         tx.onerror = reject;
-    //     });
-    // }
     function saveBatch(records) {
         return new Promise((resolve, reject) => {
             const tx = db.transaction(STORE, 'readwrite');
@@ -253,7 +217,6 @@
                     ts: r.ts || 0,
                     coverPath: r.coverPath || '',
                 });
-                // 不再空回调，打印失败日志
                 req.onerror = (e) => {
                     e.preventDefault(); // 阻止事务直接失败
                     failIds.push(r.id);
@@ -286,7 +249,7 @@
         });
     }
     // =========================
-    // 将毫秒时间戳转为 "YYYY-MM-DD" 字符串（本地时间）
+    // 将毫秒时间戳转为 "YYYY‑MM‑DD" 字符串（本地时间）
     // @param {number} ts - 毫秒时间戳
     // @returns {string}
     // =========================
@@ -299,7 +262,7 @@
     function today() { return tsToDate(Date.now()); }
     // =========================
     // 从 URL 中提取漫画 id（数字）
-    // 匹配 aid-{数字} 格式
+    // 匹配 aid‑{数字} 格式
     // @param {string} url
     // @returns {number|null}
     // =========================
@@ -484,11 +447,20 @@
             color: #555;
             cursor: pointer;
         }
+        #wn-hist-pager > button:first-child {
+            background: #e0edff;
+            position: absolute;
+            left:10px;
+        }
         .wn-page-btn.active {
             background: #e74c3c;
             color: #fff;
             border-color: #e74c3c;
             font-weight: bold;
+        }
+        .wn-page-btn:disabled{
+            background:#cccccc;
+            cursor:not-allowed;
         }
         .TabBar .classBox .OperaBar li:nth-child(n) {/* 历史页会和albums页冲突 */
             width: 25% !important;
@@ -520,7 +492,7 @@
         // 防止重复插入
         if (inside ? target.querySelector('.wn-date')
             : target.nextElementSibling?.classList.contains('wn-date')) return;
-        const a = document.createElement('a'); a
+        const a = document.createElement('a');
         a.className = 'wn-date';
         a.textContent = tsToDate(ts);
         inside ? target.appendChild(a) : target.insertAdjacentElement('afterend', a);
@@ -677,7 +649,7 @@
     // 用 idx_ts 游标按时间倒序读取指定分页的记录
     // 通过 advance(offset) 跳过前面页的数据，只读 size 条，不加载全量数据
     // 无论数据库多大，内存占用和耗时恒定
-    // @param {number} offset - 跳过的条数（= (页码-1) * 每页条数）
+    // @param {number} offset - 跳过的条数（= (页码‑1) * 每页条数）
     // @param {number} size   - 每页条数
     // @returns {Promise<Array<{id, title, ts, coverPath}>>}
     // =========================
@@ -727,17 +699,14 @@
         slice.forEach(r => {
             const coverUrl = (host && r.coverPath) ? `${host}/${r.coverPath}` : '';
             const comicUrl = `https://${location.hostname}/photos-index-aid-${r.id}.html`;
-
             const item = document.createElement('div');
             item.className = 'wn-hist-item';
-
             const linkWrap = document.createElement('a');
             linkWrap.href = comicUrl;
             linkWrap.style.flex = "1";
             linkWrap.style.display = "flex";
             linkWrap.style.gap = "10px";
             linkWrap.style.alignItems = "center";
-
             const delBtn = document.createElement('button');
             delBtn.textContent = "x";
             delBtn.style.cssText = `
@@ -763,7 +732,6 @@
                         alert("记录不存在");
                         return;
                     }
-
                     await deleteComicLocal(comicId);
                     readSet.delete(comicId);
                     totalCount = Math.max(0, totalCount - 1);
@@ -778,9 +746,6 @@
                     delBtn.textContent = "x";
                 }
             });
-
-
-
             if (coverUrl) {
                 const img = document.createElement('img');
                 img.className = 'wn-hist-cover';
@@ -791,7 +756,6 @@
             } else {
                 linkWrap.appendChild(noCover());
             }
-
             const info = document.createElement('div');
             info.className = 'wn-hist-info';
             info.innerHTML = `
@@ -799,19 +763,15 @@
                 <div class="wn-hist-date">${tsToDate(r.ts)}</div>
             `;
             linkWrap.appendChild(info);
-
             item.appendChild(linkWrap);
             item.appendChild(delBtn);
-
             linkWrap.addEventListener('click', async e => {
                 e.preventDefault();
                 try { await saveComic(r.id, r.title, r.coverPath); } catch { }
                 location.href = comicUrl;
             });
-
             listFrag.appendChild(item);
         });
-
         // 原子替换列表
         listEl.replaceChildren(listFrag);
         // ========== 分页器：传入fragment，在内存构建，不操作真实DOM ==========
@@ -838,6 +798,34 @@
      * @param {number} total 总页数
      */
     function renderPager(el, cur, total) {
+        // 新增立即同步按钮
+        const syncBtn = document.createElement('button');
+        syncBtn.className = 'wn-page-btn';
+        syncBtn.textContent = '立即同步';
+        syncBtn.addEventListener('click', async () => {
+            if (isSyncing) {
+                alert("正在同步中，请稍候");
+                return;
+            }
+            syncBtn.disabled = true;
+            syncBtn.textContent = "同步中…";
+            try {
+                // 手动点击：传 force=true，跳过"今日已同步"节流，真正执行一次完整同步
+                const ok = await syncGist(true);
+                if (ok) {
+                    alert("✅同步完成");
+                    await renderHistPage(cur);
+                } else {
+                    alert("❌同步失败，请查看控制台日志");
+                }
+            } catch (e) {
+                alert("❌同步异常：" + e.message);
+            } finally {
+                syncBtn.disabled = false;
+                syncBtn.textContent = "立即同步";
+            }
+        });
+        el.appendChild(syncBtn);
         if (total <= 1) return;
         const btn = (label, page, active = false) => {
             const b = document.createElement('span');
@@ -859,6 +847,7 @@
             }
         });
         if (cur < total) el.appendChild(btn('›', cur + 1));
+
     }
     // =========================
     // 构建分页器页码数组，超出范围用 '...' 代替
@@ -897,28 +886,29 @@
     // 格式：{ id: { title, ts, coverPath } }
     // @returns {Promise<Array<{id, title, ts, coverPath}>>}
     // =========================
-    function fetchGist() {
-        return fetch(`https://api.github.com/gists/${GIST_ID}`, {
+    async function fetchGist() {
+        const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
             headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3+json' },
-        })
-            .then(r => r.json())
-            .then(g => {
-                const content = g.files?.[GIST_FILE]?.content;
-                if (!content) return [];
-                return Object.entries(JSON.parse(content)).map(([id, v]) => ({
-                    id: Number(id), title: v.title || '', ts: v.ts || 0, coverPath: v.coverPath || '',
-                }));
-            });
+        });
+        // 显式校验 HTTP 状态：401(token失效)/403(限流)/404/gist删除/5xx 时不能静默返回 []，
+        // 否则会被误判为"云端为空"，进而用本地全量覆盖 Gist，冲掉另一台设备的新记录
+        if (!r.ok) throw new Error(`fetchGist HTTP ${r.status}`);
+        const g = await r.json();
+        const content = g.files?.[GIST_FILE]?.content;
+        if (!content) return [];
+        return Object.entries(JSON.parse(content)).map(([id, v]) => ({
+            id: Number(id), title: v.title || '', ts: v.ts || 0, coverPath: v.coverPath || '',
+        }));
     }
     // =========================
     // 将漫画记录上传到 Gist
     // 格式：{ id: { title, ts, coverPath } }
     // @param {Array<{id, title, ts, coverPath}>} records
     // =========================
-    function pushGist(records) {
+    async function pushGist(records) {
         const data = {};
         records.forEach(r => { data[r.id] = { title: r.title || '', ts: r.ts || 0, coverPath: r.coverPath || '' }; });
-        return fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
             method: 'PATCH',
             headers: {
                 'Authorization': `token ${GITHUB_TOKEN}`,
@@ -927,126 +917,126 @@
             },
             body: JSON.stringify({ files: { [GIST_FILE]: { content: JSON.stringify(data, null, 2) } } }),
         });
+        // 显式校验 HTTP 状态：4xx/5xx 时 fetch 不会 reject，必须 throw，
+        // 否则上传失败会被上层当成成功，误清 pendingDelete、误写 lastSync、误报"同步完成"
+        if (!r.ok) throw new Error(`pushGist HTTP ${r.status}`);
+        return r;
     }
-
-
     // 同步锁标识，防止并发执行
     let isSyncing = false;
-    async function syncGist() {
-        // 并发拦截
+    /**
+     * 执行 Gist 双向同步（本地/云端按 ts 合并，pendingDelete 过滤后全量覆盖上传）
+     * @param {boolean} [force=false] - 手动强制同步开关：
+     *   false（默认）→ init 自动调用，走"每日仅同步一次"节流；
+     *   true        → 历史面板"立即同步"按钮手动点击，跳过节流，真正执行一次完整同步。
+     * @returns {Promise<boolean>} 本次同步是否执行成功（被节流跳过视为成功，返回 true）
+     */
+    async function syncGist(force = false) {
+        // 并发拦截：同步立即置锁（不能在 await getMeta 之后再置，否则连点两次都会通过检查）
         if (isSyncing) {
             console.log('[wn] 同步正在进行，跳过本次请求');
             return false;
         }
-
-        // 判断今日是否已完成同步
-        const lastSyncDay = await getMeta('lastSync');
-        const todayStr = today();
-        if (lastSyncDay === todayStr) {
-            console.log('[wn] 今日已同步，无需重复执行');
-            return true;
-        }
-
         isSyncing = true;
         let syncSuccess = false;
-
         try {
-            console.log('[wn] 开始每日同步...');
-            // 拉取两边全量数据 + 读取待删除指令
-            const cloudRawRecords = await fetchGist();
-            const localRecords = await getAllRecords();
-            const pendingDeleteMap = await getPendingDelete();
-
-            const localMap = new Map(localRecords.map(r => [r.id, r]));
-            const cloudMap = new Map(cloudRawRecords.map(r => [r.id, r]));
-
-            const needPushFromLocal = []; // 本地独有 / 本地ts > 云端ts（本地变更，上传）
-            const consensusList = [];     // ts相等共识基线：仅用于上传，不写入本地
-            const toWriteLocalList = [];  // 云端ts更大 / 云端独有：需要写入本地（待过滤pendingDelete）
-
-            // 主轴遍历本地记录
-            for (const [id, localRec] of localMap) {
-                const cloudRec = cloudMap.get(id);
-                if (!cloudRec) {
-                    // 本地独有
-                    needPushFromLocal.push(localRec);
-                    continue;
+            // 判断今日是否已完成同步
+            // 自动同步（init 调用，force=false）每日仅执行一次；
+            // 手动强制同步（force=true）跳过该节流，允许用户随时再同步一次
+            const lastSyncDay = await getMeta('lastSync');
+            const todayStr = today();
+            if (!force && lastSyncDay === todayStr) {
+                console.log('[wn] 今日已同步，自动同步跳过本次执行；如需立即同步请使用历史面板"立即同步"按钮');
+                return true;
+            }
+            if (force) {
+                console.log('[wn] 手动强制同步，跳过"今日已同步"节流，开始执行完整同步流程');
+            }
+            try {
+                console.log('[wn] 开始每日同步...');
+                // 拉取两边全量数据 + 读取待删除指令
+                const cloudRecords = await fetchGist();
+                const localRecords = await getAllRecords();
+                const pendingDeleteMap = await getPendingDelete();
+                const localMap = new Map(localRecords.map(r => [r.id, r]));
+                const cloudMap = new Map(cloudRecords.map(r => [r.id, r]));
+                const needPushFromLocal = []; // 本地独有 / 本地ts > 云端ts（本地变更，上传）
+                const consensusList = [];     // ts相等共识基线：仅用于上传，不写入本地
+                const toWriteLocalList = [];  // 云端ts更大 / 云端独有：需要写入本地（待过滤pendingDelete）
+                // 主轴遍历本地记录
+                for (const [id, localRec] of localMap) {
+                    const cloudRec = cloudMap.get(id);
+                    if (!cloudRec) {
+                        // 本地独有
+                        needPushFromLocal.push(localRec);
+                        continue;
+                    }
+                    if (localRec.ts > cloudRec.ts) {
+                        // 本地版本更新，本地胜出，上传
+                        needPushFromLocal.push(localRec);
+                    } else if (cloudRec.ts > localRec.ts) {
+                        // 云端版本更新，拉取写入本地
+                        toWriteLocalList.push(cloudRec);
+                    } else {
+                        // ts完全相等，共识基线，只进上传包，不写本地DB
+                        consensusList.push(localRec);
+                    }
+                    cloudMap.delete(id);
                 }
-
-                if (localRec.ts > cloudRec.ts) {
-                    // 本地版本更新，本地胜出，上传
-                    needPushFromLocal.push(localRec);
-                } else if (cloudRec.ts > localRec.ts) {
-                    // 云端版本更新，拉取写入本地
-                    toWriteLocalList.push(cloudRec);
-                } else {
-                    // ts完全相等，共识基线，只进上传包，不写本地DB
-                    consensusList.push(localRec);
+                // cloudMap剩余条目 = 云端独有记录
+                for (const [id, rec] of cloudMap) {
+                    toWriteLocalList.push(rec);
                 }
-                cloudMap.delete(id);
+                // pendingDelete过滤：仅过滤来自云端的待写入列表
+                const toWriteFiltered = toWriteLocalList.filter(rec => {
+                    const delTs = pendingDeleteMap[rec.id];
+                    return delTs === undefined || rec.ts > delTs;
+                });
+                // 组装最终全量上传包
+                const finalUploadRecords = [...needPushFromLocal, ...consensusList, ...toWriteFiltered];
+                const finalWriteLocal = toWriteFiltered;
+                console.log(`[wn] 同步统计摘要：本地原始${localRecords.length} | 云端原始${cloudRecords.length} | 本地上传变更${needPushFromLocal.length} | 共识基线保留${consensusList.length} | 云端拉取写入${toWriteFiltered.length} | 最终上传包${finalUploadRecords.length} | 本地入库${finalWriteLocal.length}`);
+                console.log("[wn] 同步统计详情", {
+                    localRecords: localRecords.length,
+                    cloudRecords: cloudRecords.length,
+                    needPushFromLocal: needPushFromLocal.length,
+                    consensusList: consensusList.length,
+                    toWriteFiltered: toWriteFiltered.length,
+                    uploadTotal: finalUploadRecords.length,
+                    localWriteCount: finalWriteLocal.length
+                });
+                // 本地批量写入
+                if (finalWriteLocal.length > 0) {
+                    await saveBatch(finalWriteLocal);
+                    // 同步更新内存状态：云端拉过来的id加入readSet
+                    finalWriteLocal.forEach(r => readSet.add(r.id));
+                }
+                // 执行Gist全量覆盖上传
+                await pushGist(finalUploadRecords);
+                // --------全部IO成功之后才执行下面的状态变更--------
+                // 用 getCount 重数本地真实条数校准 totalCount：
+                // finalWriteLocal 里混有"本地已存在、云端ts更新"的覆盖写，put 不增加条数，
+                // 不能直接 +=；同步是低频操作，重数一次最准，同时校准删除造成的漂移
+                totalCount = await getCount();
+                // 清空待删除指令（meta中pendingDelete对象置空）
+                await clearPendingDelete();
+                // 标记今日同步已完成
+                await setMeta('lastSync', todayStr);
+                // 记录同步基线计数，重置新增计数
+                await setMeta('lastSyncCount', totalCount);
+                addedCount = 0;
+                updateStats();
+                syncSuccess = true;
+            } catch (e) {
+                console.warn('[wn] 同步失败，今日不会标记同步完成，下次会重试', { error: e });
+                syncSuccess = false;
             }
-
-            // cloudMap剩余条目 = 云端独有记录
-            for (const [id, rec] of cloudMap) {
-                toWriteLocalList.push(rec);
-            }
-
-            // pendingDelete过滤：仅过滤来自云端的待写入列表
-            const toWriteFiltered = toWriteLocalList.filter(rec => {
-                const delTs = pendingDeleteMap[rec.id];
-                return delTs === undefined || rec.ts > delTs;
-            });
-
-            // 组装最终全量上传包
-            const finalUploadRecords = [...needPushFromLocal, ...consensusList, ...toWriteFiltered];
-            const finalWriteLocal = toWriteFiltered;
-
-            console.log(`[wn] 同步统计摘要：本地总${localRecords.length} | 云端原始${cloudRawRecords.length} | 本地上传变更${needPushFromLocal.length} | 共识基线保留${consensusList.length} | 云端拉取写入${toWriteFiltered.length} | 最终上传包${finalUploadRecords.length} | 本地入库${finalWriteLocal.length}`);
-            console.log("[wn] 同步统计详情", {
-                localTotal: localRecords.length,
-                cloudRawTotal: cloudRawRecords.length,
-                localChangePush: needPushFromLocal.length,
-                consensusKeep: consensusList.length,
-                cloudPullWrite: toWriteFiltered.length,
-                uploadTotal: finalUploadRecords.length,
-                localWriteCount: finalWriteLocal.length
-            });
-            // 本地批量写入
-
-            if (finalWriteLocal.length > 0) {
-                await saveBatch(finalWriteLocal);
-                // 同步更新内存状态：新增云端过来的id加入readSet，更新totalCount
-                finalWriteLocal.forEach(r => readSet.add(r.id));
-                totalCount += finalWriteLocal.length;
-            }
-
-            // 执行Gist全量覆盖上传
-            await pushGist(finalUploadRecords);
-
-            // --------全部IO成功之后才执行下面的状态变更--------
-            // 清空待删除指令（meta中pendingDelete对象置空）
-            await clearPendingDelete();
-            // 标记今日同步已完成
-            await setMeta('lastSync', todayStr);
-            // 记录同步基线计数，重置新增计数
-            await setMeta('lastSyncCount', totalCount);
-            addedCount = 0;
-            syncSuccess = true;
-
-        } catch (e) {
-            console.warn('[wn] 同步失败，今日不会标记同步完成，下次会重试', { error: e });
-            syncSuccess = false;
+            return syncSuccess;
         } finally {
-            // 无论成功失败，释放同步锁
+            // 无论成功失败、还是被节流跳过，都释放同步锁
             isSyncing = false;
         }
-
-        // 返回同步结果供上层判断
-        return syncSuccess;
     }
-
-
-
     // =========================
     // 处理 albums 漫画列表页
     // 封面链接在 .ImgA，标题在 .txtA
@@ -1171,20 +1161,17 @@
         addStyle();
         await openDB();
         totalCount = await getCount(); // 初始化时读一次，之后内存维护，不再查库
-        await syncGist();
+        await syncGist(); // 自动同步：不传 force，保持"每日仅一次"节流
         // 用上次同步时的总数作为基线，计算自上次同步以来的未同步新增数
         // lastSyncCount 不存在（首次使用）时视为 此时云端同步总数totalCount
         const lastSyncCount = (await getMeta('lastSyncCount')) || totalCount;
-        addedCount = totalCount - lastSyncCount;
+        addedCount = Math.max(0, totalCount - lastSyncCount);//本地删除未同步会导致小于0
         await createStats();
         if (location.href.includes('users_fav')) {
             createMgmtUI();
             createFavHistUI();
         }
         //<ul class="col_2" id="classify_container">
-        // if (document.getElementById('classify_container')) {
-        //     location.href.includes('/q/') ? processSearch() : processAlbums();
-        // }
         if (document.getElementById('classify_container')) {
             const isSearch = location.href.includes('/search/');
             isSearch ? processSearch() : processAlbums();
