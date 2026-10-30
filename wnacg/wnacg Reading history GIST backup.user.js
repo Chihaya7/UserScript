@@ -501,10 +501,12 @@
     // 更新顶部统计栏
     // 直接读内存变量 totalCount / addedCount，不查数据库
     // =========================
-    function updateStats() {
+    function updateStats(updating‌ = false) {
         const el = document.getElementById('wn-stats');
         if (!el) return;
-        el.innerHTML = `${totalCount} | ${addedCount}`;
+        if (updating‌ === 'fail') el.innerHTML = "更新失败";
+        else if (updating‌) el.innerHTML = "更新中";
+        else el.innerHTML = `${totalCount} | ${addedCount}`;
     }
     // =========================
     // 在页面 header 中插入统计栏
@@ -954,6 +956,7 @@
             }
             try {
                 console.log('[wn] 开始每日同步...');
+                updateStats(true);//标记开始更新
                 // 拉取两边全量数据 + 读取待删除指令
                 const cloudRecords = await fetchGist();
                 const localRecords = await getAllRecords();
@@ -1012,7 +1015,8 @@
                     finalWriteLocal.forEach(r => readSet.add(r.id));
                 }
                 // 执行Gist全量覆盖上传
-                await pushGist(finalUploadRecords);
+                if (finalUploadRecords.length > 0)
+                    await pushGist(finalUploadRecords);
                 // --------全部IO成功之后才执行下面的状态变更--------
                 // 用 getCount 重数本地真实条数校准 totalCount：
                 // finalWriteLocal 里混有"本地已存在、云端ts更新"的覆盖写，put 不增加条数，
@@ -1029,6 +1033,7 @@
                 syncSuccess = true;
             } catch (e) {
                 console.warn('[wn] 同步失败，今日不会标记同步完成，下次会重试', { error: e });
+                updateStats("fail");
                 syncSuccess = false;
             }
             return syncSuccess;
@@ -1160,13 +1165,13 @@
     async function init() {
         addStyle();
         await openDB();
-        totalCount = await getCount(); // 初始化时读一次，之后内存维护，不再查库
-        await syncGist(); // 自动同步：不传 force，保持"每日仅一次"节流
+        totalCount = await getCount(); // 初始化时读一次，之后内存维护，不再查库 
         // 用上次同步时的总数作为基线，计算自上次同步以来的未同步新增数
         // lastSyncCount 不存在（首次使用）时视为 此时云端同步总数totalCount
         const lastSyncCount = (await getMeta('lastSyncCount')) || totalCount;
         addedCount = Math.max(0, totalCount - lastSyncCount);//本地删除未同步会导致小于0
         await createStats();
+        await syncGist(); // 自动同步：不传 force，保持"每日仅一次"节流
         if (location.href.includes('users_fav')) {
             createMgmtUI();
             createFavHistUI();
