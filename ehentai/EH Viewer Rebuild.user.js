@@ -2,7 +2,7 @@
 // @name         EH Viewer Rebuild
 // @name:zh-CN   EH站阅读器重构版
 // @namespace    ehentai
-// @version      1.11.05
+// @version      1.11.06
 // @author       Rebuild from Comic Looms
 // @description  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
 // @description:zh-CN  在ExHentai/E-Hentai画廊页直接重构缩略图列表，支持大图阅读和下载
@@ -18,7 +18,7 @@
 // @run-at       document-end
 // ==/UserScript==
 // 脚本版本号常量，每次版本更新时需同步更新此处和头部@version
-const EHV_SCRIPT_VERSION = "1.11.05";
+const EHV_SCRIPT_VERSION = "1.11.06";
 //1.6.4 refactor:EH Viewer缩略图显示重构 从拆分雪碧图到Css控制
 //1.6.5 feat:实现autoLoad（自动加载） autoLoadInBackground（后台保持加载）设置功能
 //1.6.6 fix:重新设计大图界面autoLoad表现
@@ -38,6 +38,7 @@ const EHV_SCRIPT_VERSION = "1.11.05";
 //1.11.03 feat: 悬停触发时间由1秒缩短为50毫秒；大图下载完毕后将格子内缩略图替换为大图（按格子当前尺寸显示，即放大后的缩略图大小，非原始尺寸）
 //1.11.04 feat: 大图下载后替换缩略图同样支持雪碧图模式格子（自动创建img覆盖显示并隐藏雪碧图背景），不再跳过
 //1.11.05 fix: 缩略图替换改为挂载到加载完成回调(onLoaded)统一触发，任何下载方式（悬停/自动预加载/大图阅读）大图下载完毕都会替换格子缩略图，不再仅限悬停触发
+//1.11.06 fix: 自适应布局下新追加的缩略图不再以文档流身份堆到网格顶部造成闪烁（未定位格子由 CSS 隐藏，placeItem 定位后才显形）
 //待解决bug
 //Retry with nl value:  不知道是哪个图片触发的
 //自动加载队列及优先级实现方式有些复杂，感觉可以重构
@@ -2373,6 +2374,9 @@ const EHV_SCRIPT_VERSION = "1.11.05";
                 this.gridEl.style.alignItems = "";
                 // 清除 grid 模式下可能残留的列模板
                 this.gridEl.style.gridTemplateColumns = "";
+                // 1.11.06 标记 flow 布局：新追加、尚未被 placeItem 定位的格子由 CSS 隐藏，
+                // 避免它们以普通文档流身份排到容器顶部造成闪烁
+                this.gridEl.classList.add("ehv-flow");
                 // 立即计算一次布局
                 this._scheduleLayout();
             } else {
@@ -2382,6 +2386,8 @@ const EHV_SCRIPT_VERSION = "1.11.05";
                 this.gridEl.style.height = "";
                 this.gridEl.style.gridTemplateColumns = `repeat(${colCount}, 1fr)`;
                 this.gridEl.style.gap = "4px";
+                // 1.11.06 退出 flow 布局：移除标记类，并清掉隐藏态
+                this.gridEl.classList.remove("ehv-flow");
                 // 清除自适应模式下设置的固定尺寸与绝对定位，恢复 item 默认行为
                 const items = this.gridEl.querySelectorAll(".ehv-thumb-item");
                 // 1.7.0：grid 列宽由 CSS 均分，下一帧布局完成后读实际宽度写 scale
@@ -2398,6 +2404,7 @@ const EHV_SCRIPT_VERSION = "1.11.05";
                     item.style.position = "";
                     item.style.left = "";
                     item.style.top = "";
+                    item.style.visibility = "";
                     item.classList.remove("ehv-span");
                     // 恢复固定宽高比
                     const ratio = parseFloat(item.dataset.ratio || "0.75");
@@ -2514,6 +2521,8 @@ const EHV_SCRIPT_VERSION = "1.11.05";
              * 设置单个格子的绝对定位尺寸与雪碧图 scale
              */
             const placeItem = (item, x, y, w, h, isSpan) => {
+                // 1.11.06：flow 布局下未定位的格子由 CSS 隐藏，此处定位完成后显形
+                item.style.visibility = "visible";
                 item.style.position = "absolute";
                 item.style.left = x + "px";
                 item.style.top = y + "px";
@@ -5117,6 +5126,18 @@ const EHV_SCRIPT_VERSION = "1.11.05";
 .ehv-thumb-grid {
     display: grid;
     gap: 4px;
+}
+
+/* 1.11.06 flow 布局（JS 绝对定位排版）下，新追加但尚未被 placeItem 定过位的格子：
+   强制脱离文档流且不可见，避免追加瞬间以普通流身份堆到网格左上角（顶部闪烁）。
+   定位后 placeItem 会写 inline visibility:visible 覆盖此处的 hidden。 */
+.ehv-thumb-grid.ehv-flow .ehv-thumb-item {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 0;
+    height: 0;
+    visibility: hidden;
 }
 
 .ehv-thumb-item {
