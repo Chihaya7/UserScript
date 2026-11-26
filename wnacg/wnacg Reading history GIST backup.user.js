@@ -2,8 +2,8 @@
 // @name         wnacg Reading history GIST backup
 // @name:zh-CN   绅士漫画已读记录-移动端
 // @namespace    绅士漫画
-// @version      2026-10-29 03:40:17
-// @description  仅支持移动端，自动记录已读漫画 + IndexedDB + 实时变灰 + 页面新增统计 + Gist 每日同步 +阅读日期显示+搜索页支持+历史记录面板+历史面板单条删除(延迟同步方案B)+历史面板手动立即同步按钮+手动立即同步不受每日一次限制+同步HTTP状态显式校验+本地条数getCount校准
+// @version      2026-11-26 11:36:33
+// @description  仅支持移动端，自动记录已读漫画 + IndexedDB + 实时变灰 + 页面新增统计 + Gist 每日同步 +阅读日期显示+搜索页支持+历史记录面板+历史面板单条删除(延迟同步方案B)+历史面板手动立即同步按钮+手动立即同步不受每日一次限制+同步HTTP状态显式校验+本地条数getCount校准+详情页推荐画廊已读检测
 // @icon         https://wnacg.com/favicon.ico
 // @match        https://*.wnacg.ru/*
 // @match        https://*.wnacg.com/*
@@ -517,10 +517,9 @@
         if (!header) return;
         const el = document.createElement('div');
         el.id = 'wn-stats';
-        // 直接调用通用切换函数
-        el.addEventListener('click', () => {
-            toggleHistPanel(header, 'afterend');
-        });
+        //.subHeader是photos-index-aid页面
+        const target = document.querySelector('.subHeader') || header;
+        el.addEventListener('click', () => toggleHistPanel(target, 'afterend'));
         header.appendChild(el);
         updateStats();
     }
@@ -544,6 +543,7 @@
         onSaved(ts);
         updateStats();
     }
+
     // =========================
     // 数据管理 UI（全部删除 / 全部上传）
     // =========================
@@ -849,7 +849,6 @@
             }
         });
         if (cur < total) el.appendChild(btn('›', cur + 1));
-
     }
     // =========================
     // 构建分页器页码数组，超出范围用 '...' 代替
@@ -1133,7 +1132,7 @@
             if (!titleA) return;
             const id = extractId(titleA.href);
             if (!id) return;
-            items.push({ box, id, title: titleA.textContent.trim() });
+            items.push({ box, id, title: titleA.textContent.trim() || '' });
             // 标记为已处理
             box.classList.add('wn-processed');
         });
@@ -1158,6 +1157,51 @@
         });
     }
     // =========================
+    // photos-index-aid详情页推荐画廊处理 dv‑rec‑item
+    // 封面链接在.dv-rec-cover img，标题在 .dv-rec-title
+    // 日期显示还有问题
+    // @param {Array<Element>} elements - 指定要处理的元素，不传则处理全部
+    // =========================
+    function processIndexAid(elements) {
+        const items = [];
+        const targetElements = elements || document.querySelectorAll('.dv-rec-item');
+        targetElements.forEach(itemEl => {
+            // 跳过已处理元素，避免重复绑定事件
+            if (itemEl.classList.contains('wn-processed')) return;
+            const titleEl = itemEl.querySelector('.dv-rec-title');
+            if (!itemEl) return;
+            const id = extractId(itemEl.href);
+            if (!id) return;
+            items.push({ itemEl, id, title: titleEl?.textContent.trim() || '' });
+            itemEl.classList.add('wn-processed');
+            // 设置新标签打开
+            itemEl.target = '_blank';
+        });
+        if (items.length === 0) return;
+        // 批量查询已读记录，标记页面上已读的漫画
+        queryByIds(items.map(it => it.id)).then(results => {
+            results.forEach((rec, i) => {
+                if (!rec) return;
+                const { itemEl, id } = items[i];
+                readSet.add(id);
+                markRead(itemEl);
+                showDate(itemEl, '.dv-rec-title', rec.ts, true);
+            });
+        });
+        // 绑定点击事件，点击后保存记录
+        items.forEach(({ itemEl, id, title }) => {
+            itemEl.addEventListener('click', () => {
+                handleClick(
+                    id, title,
+                    () => itemEl.querySelector('.dv-rec-cover img')?.src || '',
+                    ts => { markRead(itemEl); showDate(itemEl, '.dv-rec-title', ts, true); }
+                );
+            });
+        });
+    }
+
+
+    // =========================
     // 初始化入口
     // 顺序：注入样式 → 开启DB → 每日Gist同步
     //       → 读取总数到内存 → 统计栏 → 数据管理UI → 历史记录UI → 分发页面处理
@@ -1165,7 +1209,7 @@
     async function init() {
         addStyle();
         await openDB();
-        totalCount = await getCount(); // 初始化时读一次，之后内存维护，不再查库 
+        totalCount = await getCount(); // 初始化时读一次，之后内存维护，不再查库
         // 用上次同步时的总数作为基线，计算自上次同步以来的未同步新增数
         // lastSyncCount 不存在（首次使用）时视为 此时云端同步总数totalCount
         const lastSyncCount = (await getMeta('lastSyncCount')) || totalCount;
@@ -1216,6 +1260,27 @@
                         });
                         if (newBoxes.length > 0) {
                             processRanking(newBoxes);
+                        }
+                    });
+                });
+                observer.observe(listContainer, { childList: true, subtree: false });
+            }
+        }
+        if (location.href.includes('/photos-index-aid-')) {
+            processIndexAid();
+            // 监听动态加载的详情页推荐项
+            const listContainer = document.querySelector('body > div.Introduct');
+            if (listContainer) {
+                const observer = new MutationObserver(mutations => {
+                    mutations.forEach(mut => {
+                        const newItems = [];
+                        mut.addedNodes.forEach(node => {
+                            if (node.nodeType === 1 && node.classList?.contains('dv-rec-item')) {
+                                newItems.push(node);
+                            }
+                        });
+                        if (newItems.length > 0) {
+                            processIndexAid(newItems);
                         }
                     });
                 });
