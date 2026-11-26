@@ -2,7 +2,7 @@
 // @name               wnacg Viewer
 // @name:zh-CN         wnacg Viewer
 // @namespace          绅士漫画
-// @version            4.18.1
+// @version            4.19.5
 // @author
 // @description
 // @description:en     Manga Viewer + Downloader, Focus on experience and low load on the site. Support you in finding the site you are searching for.
@@ -185,6 +185,8 @@
         gridMode: ["缩略图模式"],
         wnSwitchMode: ["切换线路时换源范围"],
         wnSwitchModeTooltip: ["全部图片：切换线路后所有图片都按新线路重新下载。<br>仅未加载图片：已加载完成的图片保留旧线路数据，仅尚未下载的图片按新线路加载。"],
+        wnAllChapters: ["加载全部章节"],
+        wnAllChaptersTooltip: ["关闭(默认)：只加载当前章节的图片，与原来行为一致。<br>开启：如果该作品包含多个章节，则依次把每一话的图片都加载进同一个阅读列表里(每话的图片列表需单独请求一次)，关闭需刷新页面后生效。"],
         readModeTooltip: ["滚动时切换到下一张图片，否则连续阅读"],
         stickyMouse: ["黏糊糊鼠标"],
         stickyMouseTooltip: ["非连续阅读模式下，通过鼠标移动来自动滚动单张图片。"],
@@ -470,6 +472,7 @@
             dragImageOut: false,
             excludeVideo: false,
             wnSwitchMode: "all",
+            wnAllChapters: false,
             enableFilter: false,
             filterTags: [],
             imgNodeActions: [],
@@ -902,6 +905,12 @@
                     display: "仅未加载图片"
                 }
             ],
+            displayInSite: /wn\d{2}\.(cc|ru|shop)|wnacg\.com/
+        },
+        {
+            key: "wnAllChapters",
+            typ: "boolean",
+            gridColumnRange: [1, 11],
             displayInSite: /wn\d{2}\.(cc|ru|shop)|wnacg\.com/
         }
     ];
@@ -1854,6 +1863,7 @@
         }
     };
     var wnacg_exports = __exportAll({});
+    // ===== WNACG 多章节图片合并加载 v4.19.0 =====
     // ===== WNACG 图片线路（换源） v4.16.0 =====
     var WN_LINE_OPTS = ["默认", "高速1", "高速2"];
     var WN_LINE_TARGET = ["", "img5.wnimg1.ru", "img5.qy0.ru"];
@@ -1872,16 +1882,101 @@
         meta;
         baseURL;
         galleryURL;
-        async *fetchPagesSource() {
-            const id = this.extractIDFromChid(window.location.href);
-            if (!id) throw new Error("Cannot find gallery ID");
-            this.baseURL = `${window.location.origin}/photos-index-page-1-aid-${id}.html`;
-            this.galleryURL = `${window.location.origin}/photos-gallery-aid-${id}.html`;
-            console.log('this.galleryURL ' + this.galleryURL);
-            let doc = await window.fetch(this.baseURL).then((res) => res.text()).then((text) => new DOMParser().parseFromString(text, "text/html"));
-            this.meta = this.pasrseGalleryMeta(doc);
-            let galleryImageList = await this.requestGalleryImages(this.galleryURL);
-            yield Result.ok(galleryImageList);
+        /**
+         * 收集当前页面上的全部章节（v4.19.2）
+         * 兼容三种页面结构：
+         *   1) .dv-section.dv-ch > #dv-ch-list > li[data-chid]（章节模块，列表）
+         *   2) .sr_compact > a[data-chid]（文字章节块）
+         *   3) .gallary_wrap > ul > li.gallary_item[data-chid]（章节缩略图网格）
+         * @returns {{chid: string, title: string, href: string}[]} 按页面显示顺序去重后的章节
+         */
+        wnCollectChapters() {
+            const seen = new Set();
+            const chapters = [];
+            document.querySelectorAll("[data-chid]").forEach((node) => {
+                const container = node.closest("#dv-ch-list, .dv-section.dv-ch, .sr_compact, .gallary_wrap");
+                const anchor = node.tagName === "A" ? node : node.querySelector("a");
+                const href = anchor?.getAttribute("href") ?? "";
+                // 既不在已知章节容器内，也没有章节阅读页链接的节点，忽略
+                if (!container && !href.includes("photos-slide-aid-")) return;
+                const chid = node.getAttribute("data-chid") || node.closest("li")?.getAttribute("data-chid") || "";
+                if (!chid || seen.has(chid)) return;
+                seen.add(chid);
+                chapters.push({
+                    chid,
+                    title: (anchor?.getAttribute("title") || anchor?.textContent || "").trim(),
+                    href
+                });
+            });
+            // 章节列表可能分页显示(#dv-ch-more 的 data-total)，超出当前页的部分无法直接收集
+            const more = document.querySelector("#dv-ch-more");
+            const total = parseInt(more?.getAttribute("data-total") || "", 10);
+            if (!isNaN(total) && total > chapters.length) console.log(`[WNACG] 页面仅列出 ${chapters.length} 话，站点标记共计 ${total} 话，超出部分暂不加载`);
+            return chapters;
+        }
+        async *fetchPagesSource(_chapter) {
+            // 当前章节：优先取页面 DOM 中标记的当前章节，失败再用 URL 兜底
+            const curID = this.extractIDFromChid(window.location.href);
+            let chapterIDs = [];
+            if (ADAPTER.conf.wnAllChapters) {
+                const collected = this.wnCollectChapters();
+                console.log(`[WNACG] 已开启「加载全部章节」，页面收集到 ${collected.length} 个章节`, collected);
+                chapterIDs = collected.map((c) => c.chid).filter(Boolean);
+                if (chapterIDs.length === 0) console.log("[WNACG] 未收集到章节列表，回退为仅加载当前章节");
+                else if (curID && !chapterIDs.includes(curID)) chapterIDs.unshift(curID);
+                if (chapterIDs.length > 1) EBUS.emit("notify-message", "info", `检测到 ${chapterIDs.length} 个章节，将依次加载全部图片`, 3e3);
+            }
+            if (chapterIDs.length === 0) {
+                if (!curID) throw new Error("Cannot find gallery ID");
+                chapterIDs = [curID];
+            }
+            const origin = window.location.origin;
+            // 画廊信息(标题/标签)取第一个章节的详情页
+            this.baseURL = `${origin}/photos-index-page-1-aid-${chapterIDs[0]}.html`;
+            this.galleryURL = `${origin}/photos-gallery-aid-${chapterIDs[0]}.html`;
+            console.log(`[WNACG] 待加载章节数 ${chapterIDs.length}:`, chapterIDs);
+            console.log("this.galleryURL " + this.galleryURL);
+            const { text: metaText, status: metaStatus, elapsed: metaElapsed } = await this.wnFetchText(this.baseURL, 20e3);
+            console.log(`[WNACG][debug] meta页 ${this.baseURL} http=${metaStatus} 耗时=${metaElapsed}ms 字节=${metaText.length}`);
+            this.meta = this.pasrseGalleryMeta(new DOMParser().parseFromString(metaText, "text/html"));
+            // 逐个章节请求图片列表并依次产出，PageFetcher 会把它们追加到同一个阅读列表
+            let totalImages = 0;
+            const failed = []; // 记录失败章节的段号，便于最后汇总日志
+            for (let i = 0; i < chapterIDs.length; i++) {
+                const chid = chapterIDs[i];
+                const galleryURL = `${origin}/photos-gallery-aid-${chid}.html`;
+                let galleryImageList = [];
+                let reason = "";
+                // 每章最多尝试 3 次，把偶发的超时/反爬请求兜住
+                for (let attempt = 1; attempt <= 3; attempt++) {
+                    try {
+                        galleryImageList = await this.requestGalleryImages(galleryURL);
+                        if (galleryImageList.length > 0) break;
+                        reason = "未解析到图片(可能页面结构变化或被拦截)";
+                        console.log(`[WNACG] 章节 ${chid} 第 ${attempt} 次请求未解析到图片: ${galleryURL}`);
+                    } catch (error) {
+                        reason = `${error}`;
+                        console.log(`[WNACG] 章节 ${chid} 第 ${attempt} 次请求失败: ${galleryURL}`, error);
+                    }
+                    if (attempt < 3) await sleep$1(400 * attempt);
+                }
+                if (galleryImageList.length === 0) {
+                    failed.push(i + 1);
+                    console.log(`[WNACG] 章节 ${chid} 加载失败，已跳过 (第 ${i + 1}/${chapterIDs.length} 段)，原因: ${reason}`);
+                    // 立即提示：不能等到整个生成器跑完才提示，否则用户滚到这里时看不到任何反馈
+                    // 不传 duration：错误提示常驻，必须手动点 X 关闭，避免一闪而错过
+                    EBUS.emit("notify-message", "error",
+                        `第 ${i + 1} 段（章节 ${chid}）的图片列表加载失败，已跳过，不显示该段图片。详见控制台(F12) [WNACG] 日志。`);
+                    continue;
+                }
+                totalImages += galleryImageList.length;
+                console.log(`[WNACG] 章节 ${chid} 解析到 ${galleryImageList.length} 张图片，累计 ${totalImages} 张 (第 ${i + 1}/${chapterIDs.length} 段)`);
+                yield Result.ok(galleryImageList);
+                // 下一个章节请求前留一点间隔，降低连续请求被站点限流的概率
+                if (i < chapterIDs.length - 1) await sleep$1(300);
+            }
+            if (failed.length > 0) console.log(`[WNACG] 本次共 ${failed.length} 段加载失败：第 ${failed.join("、")} 段（共 ${chapterIDs.length} 段）`);
+            if (totalImages === 0) throw new Error("所有章节的图片列表都加载失败，请刷新页面重试（详见控制台 [WNACG] 日志）");
         }
         async parseImgNodes(list) {
             const result = [];
@@ -1907,35 +2002,48 @@
             return this.meta || super.galleryMeta(chapter);
         }
         /**
-         * 获取章节chid：优先DOM提取，DOM提取失败再通过URL解析兜底
+         * 获取当前章节的 chid（v4.19.2）
+         * 依次尝试：
+         *   1) 页面标记的“当前章节”元素（.sr_cur / .cur），chid 从该元素自身或最近的家/子元素上取，
+         *      标记可能在使用 a 上（文字块）也可能在 li 上（缩略图网格）
+         *   2) 页面章节列表中的第一个章节（复用 wnCollectChapters，兼容三种模板）
+         *   3) URL 解析兜底：photos-slide-aid-xxx > aid-xxx > 末尾数字
          * @param {string} href
          * @returns {string|undefined} chid
          */
         extractIDFromChid(href) {
-            const sectionEl = document.querySelector('.dv-section');
-
-            if (sectionEl) {
-                // 优先级1：当前选中章节 li.cur 的 data-chid
-                const curItem = sectionEl.querySelector('li.cur');
-                if (curItem?.dataset.chid) {
-                    console.log('取自 cur li 的 chid：', curItem.dataset.chid);
-                    return curItem.dataset.chid;
+            const chapters = this.wnCollectChapters();
+            const chapterIDs = new Set(chapters.map((c) => c.chid));
+            // 优先级1：页面标记的当前章节
+            // .sr_cur 是站点明确标记的“当前话”(新模板)，.cur 是旧模板标记，单独给 .cur 更宽的条件
+            const curSelectors = [".sr_cur", "li.cur", ".cur"];
+            for (const selector of curSelectors) {
+                for (const node of document.querySelectorAll(selector)) {
+                    const holder = node.matches("[data-chid]") ? node
+                        : node.closest("[data-chid]") || node.querySelector("[data-chid]");
+                    const chid = holder?.getAttribute("data-chid");
+                    if (!chid) continue;
+                    // 章节列表存在时，只接受列表里真实存在的 chid，避免误撞到其它带 .cur 的模块
+                    if (chapterIDs.size > 0 && !chapterIDs.has(chid)) continue;
+                    if (selector === ".cur" && !chapterIDs.has(chid)) continue;
+                    console.log(`[WNACG] 当前章节 chid 取自 ${selector}：`, chid);
+                    return chid;
                 }
-
-                // 优先级2：章节列表第一个li的 data-chid
-                const firstItem = sectionEl.querySelector('ul li:first-child');
-                if (firstItem?.dataset.chid) {
-                    console.log('取自首个 li 的 chid：', firstItem.dataset.chid);
-                    return firstItem.dataset.chid;
-                }
-                console.log('DOM内未找到可用chid，使用URL解析兜底');
-            } else {
-                console.log('未找到 .dv-section，使用URL解析兜底');
             }
-
-            // 容器不存在 或者 DOM里没拿到chid，统一走到这里兜底
-            const matched = href.match(/-(\d+)\.html$/);
-            return matched?.[1];
+            // 优先级2：章节列表中的第一个章节
+            if (chapters.length > 0) {
+                console.log("[WNACG] 未找到当前章节标记，取章节列表第一个章节：", chapters[0].chid);
+                return chapters[0].chid;
+            }
+            console.log("[WNACG] 页面内未找到章节列表，使用URL解析兜底");
+            // 优先级3：URL 解析兜底
+            // 注意：多话作品详情页 photos-index-aid-<sid>.html 里的 aid 是合集 id，不能当 chid 用，
+            // 所以优先从阅读页链接 photos-slide-aid-<chid>-sid-<sid>.html 中取 chid
+            const slide = href.match(/photos-slide-aid-(\d+)/);
+            if (slide?.[1]) return slide[1];
+            const aid = href.match(/[-/]aid-(\d+)/);
+            if (aid?.[1]) return aid[1];
+            return href.match(/-(\d+)\.html$/)?.[1];
         }
         pasrseGalleryMeta(doc) {
             const title = doc.querySelector("#bodywrap > h2")?.textContent || "unknown";
@@ -1946,13 +2054,34 @@
             };
             return meta;
         }
+        /**
+         * 带超时的文本请求：避免请求挂起导致 appendNextPage 的 promise 永远不结算
+         * @param {string} url
+         * @param {number} timeoutMs
+         * @returns {Promise<{text: string, status: number, elapsed: number}>}
+         */
+        async wnFetchText(url, timeoutMs = 20e3) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), timeoutMs);
+            const startAt = Date.now();
+            try {
+                const resp = await window.fetch(url, { signal: controller.signal });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+                const text = await resp.text();
+                return { text, status: resp.status, elapsed: Date.now() - startAt };
+            } finally {
+                clearTimeout(timer);
+            }
+        }
         async requestGalleryImages(galleryURL) {
-            const text = await window.fetch(galleryURL).then((res) => res.text());
+            const { text, status, elapsed } = await this.wnFetchText(galleryURL, 20e3);
             let js = "";
+            let imglistLines = 0;
             for (let line of text.split("\n")) {
                 line = line.replace("document.writeln(\"", "");
                 line = line.replace("\");", "");
                 if (line.includes("var imglist")) {
+                    imglistLines++;
                     line = line.replace("var imglist = ", "");
                     line = line.replaceAll("fast_img_host+\\", "");
                     line = line.replaceAll("\\", "");
@@ -1960,6 +2089,8 @@
                 }
             }
             const list = this.extractUrlsAndCaptions(js);
+            console.log(`[WNACG][debug] ${galleryURL} http=${status} 耗时=${elapsed}ms 字节=${text.length} imglist行=${imglistLines} 解析图片=${list.length}`);
+            if (list.length === 0) console.log("[WNACG][debug] 未解析到图片，原始文本前 500 字：\n" + text.slice(0, 500));
             console.log("[WNACG] img list 原始网址（共 " + list.length + " 张）", list);
             return list;
         }
@@ -4031,6 +4162,7 @@ return {data};
                 IL.abort(0, ADAPTER.conf.restartIdleLoader / 3);
             }
             if (key === "reversePages") BIFM.changeLayout();
+            if (key === "wnAllChapters") EBUS.emit("notify-message", "info", value ? "已开启加载全部章节，刷新页面后生效" : "已关闭加载全部章节，刷新页面后生效", 3e3);
         }
         function changeReadModeEvent(value, siteName) {
             if (value) ADAPTER.conf.readMode = value;
